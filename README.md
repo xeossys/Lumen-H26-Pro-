@@ -8,7 +8,7 @@
 
 **OpenLumen H26pro+** is a pure-Python reverse-engineering and modding suite built for smartwatch UI developers. By translating proprietary H26 binary structures into editable data, OpenLumen bridges the gap between raw hexadecimal code and visual design.
 
-Currently, OpenLumen functions as a highly advanced **Decompiler, Analyzer, and Emulator**. You can unpack `.bin` files, extract raw assets, decode UI layouts, and emulate analog clock behaviors. 
+Currently, OpenLumen functions as a highly advanced **Decompiler, Analyzer, and Emulator**. You can unpack `_res binary` files, extract raw assets, decode UI layouts, and emulate analog clock behaviors. 
 
 ⚠️ **Help Wanted:** We are currently building the **Compiler & Repacker** phase of this project and are actively looking for Python developers and reverse-engineers to help us crack the LZ4 encoding injection! (See the [Help Wanted / Roadmap](#-help-wanted--roadmap-the-compiler) section below).
 
