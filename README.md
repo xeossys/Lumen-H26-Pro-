@@ -70,7 +70,6 @@ If you want to contribute, please fork the repository, open a Pull Request, or s
   +-----------+-----------+    Harvest Image Offset Pointers
 💾 Supported Memory BlocksCompression / BlockID HeaderDescriptionLZ4 Palette320x4B018-bit Indexed Palette (256 Colors)LZ4 RGB565 + A0x480116-bit RGB565 with Alpha ChannelLZ4 RGB5650x490116-bit RGB565 OpaqueJPEG Graphic0x0900Standard Compressed ImageGIF Graphic0x0300Standard Animated GraphicUI Table Map0x1CUI Layout & Pointers Structure📥 InstallationClone the Repository:Bashgit clone [https://github.com/xeossys/Lumen-H26-Pro-.git](https://github.com/xeossys/Lumen-H26-Pro-.git)
 cd Lumen-H26-Pro-
-Install Required GUI Library:Bashpip install PyQt6
-Launch the Studio:Bashpython openlumen.py
-
+Install Dependencies:Bashpip install -r requirements.txt
+(Or just pip install PyQt6 as it is the only dependency!)Launch the Studio:Bashpython main.py
 📜 License & AttributionOriginal Research, Data & Watchface Analyzer: @vx_vxswPython Port & Code Implementation: OpenLumen Team (xeossys)License: MIT License
