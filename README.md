@@ -72,4 +72,4 @@ If you want to contribute, please fork the repository, open a Pull Request, or s
 cd Lumen-H26-Pro-
 Install Dependencies:Bashpip install -r requirements.txt
 (Or just pip install PyQt6 as it is the only dependency!)Launch the Studio:Bashpython main.py
-📜 License & AttributionOriginal Research, Data & Watchface Analyzer: @vx_vxswPython Port & Code Implementation: OpenLumen Team (xeossys)License: MIT License
+📜 License & AttributionOriginal Research, Data & Watchface Analyzer: @vx_vxsw Python Port & Code Implementation: OpenLumen Team (xeossys)License: MIT License
