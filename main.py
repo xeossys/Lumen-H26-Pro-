@@ -13,7 +13,7 @@ from PyQt6.QtGui import QImage, QPainter, QColor, QPen, QFont
 from PyQt6.QtCore import Qt, QRect, QTimer, QTime
 
 # ==============================================================================
-# 1. CORE UTILITIES & DECOMPRESSOR (Pure Python)
+# 1. CORE UTILITIES & DECOMPRESSOR
 # ==============================================================================
 
 def vb_get_4b_be(b: bytes, pos: int) -> int:
