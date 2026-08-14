@@ -97,17 +97,20 @@ for item in an.ui_items:
 
 ## 🧪 Development
 
-### Run the smoke test
+### Run the tests
 
-The repo includes a synthetic-binary smoke test that exercises every
-parsed UI type (37, 47, 5B) and verifies the decoded fields match
-expectations. **Always run it after touching the parser.**
+The repo includes a comprehensive test suite under `tests/`:
 
 ```bash
-python3 _smoke_test.py
+python3 tests/test_smoke.py          # synthetic parser smoke test
+python3 tests/test_real_file.py      # 3 real fixture assertions
+python3 tests/test_roundtrip.py      # round-trip + idempotency
+python3 tests/test_encoder.py        # encoder data model + JSON I/O
+python3 tests/test_image_codec.py    # image quantization + block encoding
+python3 tests/test_compile.py        # full encoder pipeline integration
 ```
 
-Expected last line: `ALL SMOKE TESTS PASSED ✅`.
+Expected last line for each: `ALL ... PASSED ✅`.
 
 ### Linting
 
@@ -196,20 +199,79 @@ full rationale).
 
 ---
 
-## 🚧 Help Wanted / Roadmap: The Compiler
+## ✅ Encoder (v1)
 
-The end goal is a **Compiler & Repacker** that can inject new PNG/JPG
-assets into an existing `.bin` file while preserving all the global
-memory offsets. To make that possible, we still need to crack the
-**injection** of LZ4-compressed blocks — the current `decompress_lz4_vb`
-function only handles the *decode* path.
+The encoder (`h26/encoder.py`) compiles a `Project` data model into a
+valid `.bin` watchface file. It is the inverse of the parser:
+PNG/JPG assets → LZ4pal32 blocks → H26 binary.
 
-**What needs to be built:**
-1. **LZ4 RGB565 / Palette32 Encoder:** A pure-Python encoder that can take a custom `.png`, convert it to the watch's specific 16-bit RGB565 or 8-bit palette format, and compress it using standard LZ4 block compression.
-2. **Memory Alignment Logic:** If a newly compressed image is smaller than the original, we need a script to pad the remaining space with `0x00` (Null bytes) to preserve the exact global memory offsets for the rest of the `.bin` file.
-3. **Safety Locks:** Logic to block injections if the new asset's binary size exceeds the original memory slot (to prevent soft-bricking).
+**What v1 supports:**
+- LZ4pal32 image blocks (8-bit paletted, 256 colors)
+- JPG preview blocks
+- UI items: Layout (0x00), Frame (0x01), Hand (0x0F), Animation (0x14)
+- Byte-perfect round-trip: `compile(project)` → `analyzer.serialize()` → identical bytes
 
-If you want to contribute, please fork the repository, open a Pull Request, or start a discussion in the Issues tab!
+**What v1 does NOT support (contributions welcome):**
+- BGR565 / BGR565A blocks
+- AOD layouts (sub-type 0x8D)
+- Type 37 (system-screen buttons), 47/48/4B/4C (angled fonts), 5B (solid rectangles)
+- Animation frame-by-frame editing in the GUI
+
+### Quick start (programmatic)
+
+```python
+from h26 import Project, Layout, FrameItem, ImageAsset, compile
+
+project = Project(
+    name="my_watchface",
+    images=[ImageAsset(name="bg", source_path="bg.png", width=240, height=240)],
+    layout=Layout(children=[FrameItem(x=0, y=0, image_name="bg")]),
+)
+data = compile(project)
+with open("my_watchface.bin", "wb") as f:
+    f.write(data)
+```
+
+Requires `lz4` (`pip install lz4`) and `Pillow` (`pip install Pillow`).
+
+### Test suite
+
+```bash
+python3 tests/test_encoder.py        # data model + JSON I/O (7 tests)
+python3 tests/test_image_codec.py    # quantize + block encoding (10 tests)
+python3 tests/test_compile.py        # full pipeline integration (7 tests)
+python3 tests/test_smoke.py          # synthetic parser smoke test
+python3 tests/test_real_file.py      # 3 real fixture assertions
+python3 tests/test_roundtrip.py      # round-trip + idempotency
+```
+
+---
+
+## 🚧 Roadmap: GUI Encoder Tab (contributions welcome)
+
+The encoder CLI/API is complete. The next step is a **GUI tab** in
+the existing PyQt6 app that lets users:
+
+1. Drag-and-drop PNG/JPG assets onto a virtual canvas
+2. Position UI items (frames, hands, animations) visually
+3. Click "Compile" to produce a valid `.bin` file
+4. "Test load" → re-parse the compiled file in the existing View tab
+
+See the implementation plan in `~/.hermes/plans/h26-encoder.md`
+(Tasks 11-13) for the detailed wireframe and code structure.
+
+**What remains to be built:**
+1. **GUI Encoder Tab** (Tasks 11-13): PyQt6 interface with drag-and-drop
+   canvas, property editing, and a "Compile" button. See the plan.
+2. **BGR565 / BGR565A block encoding**: currently only LZ4pal32 is supported.
+3. **AOD layout support** (sub-type 0x8D): the parser reads it but the
+   encoder doesn't emit it yet.
+4. **Additional UIItem types**: 0x37 (buttons), 0x47/48/4B/4C (angled
+   fonts), 0x5B (solid rectangles) — the parser decodes them but the
+   encoder rejects them with a clear error message.
+
+If you want to contribute, please fork the repository, open a Pull
+Request, or start a discussion in the Issues tab!
 
 ---
 
