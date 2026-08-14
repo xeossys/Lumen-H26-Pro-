@@ -44,3 +44,4 @@ ignore = [
 "tests/test_real_file.py" = ["E402", "F401", "S101", "S108", "BLE001"]
 "tests/test_roundtrip.py" = ["E402", "F401", "S101", "S108", "BLE001"]
 "tests/test_encoder.py" = ["E402", "F401", "S101", "S108", "BLE001"]
+"tests/test_image_codec.py" = ["E402", "F401", "S101", "S108", "BLE001"]
