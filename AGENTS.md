@@ -7,7 +7,7 @@
 
 - **Stack**: Python 3.8+, PyQt6 (GUI only), pure-Python LZ4 decoder, `lz4`+`Pillow` for encoder.
 - **Lint**: `ruff` (config in `pyproject.toml`). Run `ruff check .` before any commit.
-- **Tests**: `python3 tests/test_smoke.py` (parser) + `python3 tests/test_compile.py` (encoder) + `python3 tests/test_roundtrip.py` + `python3 tests/test_real_file.py` + `python3 tests/test_encoder.py` + `python3 tests/test_image_codec.py`. All must pass before any commit.
+- **Tests**: `uv run pytest tests/ -v`. All 79 tests must pass before any commit.
 - **Branch model**: Git Flow. `feature/*` and `fix/*` → `develop`. `hotfix/*` → `main`. Tags use `YYYY.M.D`.
 - **Push policy**: agents must NOT push to remote without explicit user instruction. Local git only by default.
 - **Credentials**: there are none in this repo. If you find any, stop and tell Andrea.
@@ -23,9 +23,11 @@ Lumen-H26-Pro-Encoder/
 │   ├── project.py           # Data model: Project, Layout, UI items, JSON I/O
 │   ├── image_codec.py       # Quantize RGBA→256 pal, LZ4pal32 block, JPG block
 │   ├── encoder.py           # compile(project) → bytes pipeline
-│   └── cli.py               # CLI: compile, parse, info, verify
+│   └── cli.py               # CLI: compile, parse, info, verify, export, build
+
 ├── tests/
-│   ├── conftest.py          # PyQt6 stub + build_synthetic_binary() helper
+│   ├── conftest.py          # PyQt6 stub + fixtures + build_synthetic_binary()
+
 │   ├── test_smoke.py        # Synthetic parser smoke test
 │   ├── test_real_file.py    # 3 real fixture structural assertions
 │   ├── test_roundtrip.py    # Round-trip + idempotency
@@ -71,11 +73,12 @@ Agents MUST preserve the signatures of:
 - `h26.build_jpg_preview_block(jpg_bytes) -> bytes`
 
 ### CLI (h26/cli.py)
-
 - `python3 -m h26.cli compile <project.json> [-o output.bin]`
 - `python3 -m h26.cli parse <file.bin>`
 - `python3 -m h26.cli info <file.bin>`
 - `python3 -m h26.cli verify <file.bin>`
+- `python3 -m h26.cli export <file.bin> [-o output_folder/]`
+- `python3 -m h26.cli build <folder_or_zip> [-o output.bin]`
 
 ## Important domain concepts
 
@@ -90,17 +93,27 @@ Agents MUST preserve the signatures of:
 
 Before ANY commit that touches the parser or encoder:
 
-1. `python3 -m py_compile main.py` — smoke compile
-2. `ruff check .` — must be clean
-3. `ruff format --check .` — must be clean
-4. `python3 tests/test_smoke.py` — `ALL SMOKE TESTS PASSED ✅`
-5. `python3 tests/test_real_file.py` — `ALL 3 REAL-FILE FIXTURE(S) PASSED ✅`
-6. `python3 tests/test_roundtrip.py` — `ALL ROUND-TRIP TESTS PASSED ✅`
-7. `python3 tests/test_encoder.py` — `ALL ENCODER PROJECT TESTS PASSED`
-8. `python3 tests/test_image_codec.py` — `ALL IMAGE CODEC TESTS PASSED`
-9. `python3 tests/test_compile.py` — `ALL COMPILE INTEGRATION TESTS PASSED`
+1. `uv run python -m py_compile main.py` — smoke compile
+2. `uv run ruff check .` — must be clean
+3. `uv run ruff format --check .` — must be clean
+4. `uv run pytest tests/ -v` — all tests must pass
 
 If ANY test fails, do not commit. Fix it first.
+
+## Important domain concepts
+
+- **H26**: the proprietary binary format used by Vela OS watchfaces. Header → Graphical blocks → UI Table.
+- **Magic header**: `0x53 0x62 0x40 0x2A` (ASCII `Sb@*`). Every valid `.bin` starts with this.
+- **Graphical blocks**: LZ4-compressed image data. Types defined in `h26/decoder.py`:
+  - `TAG_LZ4PAL32 = (0x4B, 0x01)` — LZ4pal32 (8-bit paletted, 256 colors)
+  - `TAG_BGR565A = (0x48, 0x01)` — BGR565A (RGB565 + alpha)
+  - `TAG_BGR565 = (0x49, 0x01)` — BGR565 (opaque)
+  - `TAG_JPG = (0x09, 0x00)` — JPG preview
+  - `TAG_GIF = (0x03, 0x00)` — GIF animation
+  - `TAG_UNK_34 = (0x34, 0x01)` — Unknown block type (different header size)
+- **UI Table**: a flat sequence of UIItems. Each starts with a 5×4-byte big-endian header (Type, SubType, Align, X, Y). The parser's `_parse_ui_table_fixed` handles all known types.
+- **Endianness warning**: `vb_get_4b_le` is actually **big-endian** and `vb_get_4b_be` is actually **little-endian**. The names are backwards. The encoder uses explicit `struct.pack(">I", ...)` for BE and `struct.pack("<I", ...)` for LE to avoid confusion.
+- **PyQt6 stubs**: the test suite and CLI import `main.py` headlessly by injecting PyQt6 stub modules into `sys.modules` before import. See `tests/conftest.py` for the pattern.
 
 ## Things to watch out for
 
@@ -111,7 +124,6 @@ If ANY test fails, do not commit. Fix it first.
 - The encoder's palette serialization swaps R↔B (RGBA→BGRA) to match the decoder's expectations. See `h26/image_codec.py`.
 - The JPG block header uses a 3-byte LE length at offset+2 (not 4-byte at offset+8 like LZ4 blocks). See `h26/image_codec.py:build_jpg_preview_block`.
 - The Layout UI item's extended bytes use a nested group format: `[loops:4b] [count:4b] [indices...]`. See `h26/encoder.py:_encode_layout`.
-
 ## Test fixtures
 
 Three real `.bin` files in `tests/fixtures/`:
