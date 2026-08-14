@@ -7,11 +7,7 @@
 ![Contributions](https://img.shields.io/badge/contributions-welcome-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-purple.svg)
 
-**OpenLumen H26pro+** is a pure-Python reverse-engineering and modding suite built for smartwatch Watchface developers. By translating proprietary H26 binary structures into editable data, OpenLumen bridges the gap between raw hexadecimal code and visual design.
-
-Currently, OpenLumen functions as a highly advanced **Decompiler, Analyzer, and Emulator**. You can unpack `_res binary` files, extract raw assets, decode UI layouts, and emulate analog clock behaviors.
-
-⚠️ **Help Wanted:** We are currently building the **Compiler & Repacker** phase of this project and are actively looking for Python developers and reverse-engineers to help us crack the LZ4 encoding injection! (See the [Help Wanted / Roadmap](#-help-wanted--roadmap-the-compiler) section below).
+**OpenLumen H26pro+** is a pure-Python reverse-engineering and modding suite for H26 smartwatch watchfaces. It can **decompile**, **analyze**, **compile**, and **verify** `.bin` watchface files — bridging the gap between raw binary and visual design.
 
 ---
 
@@ -24,12 +20,19 @@ The UI Table parser was hardened against the [H26 Watchface File Format Specific
 
 ---
 
-## ✨ Current Features (v1.0)
+## ✨ Current Features
 
-* **Full Decompilation & Extraction:** Automatically unpacks `.bin` files, maps memory offsets and UI tables, and extracts all valid image layers (PNG, JPG, GIF) to your local drive.
-* **Zero-Dependency LZ4 Decoder:** Features built-in, pure-Python LZ4 decompression. No C-compilers, build tools, or external binary dependencies required.
-* **Live Watchface Emulator:** A real-time rendering canvas that recreates the watchface on screen with moving hands.
-* **Spec-aligned UI Table parsing:** Every UIItem type defined in the H26 spec is now decoded into structured Python fields:
+* **Full Decompilation & Extraction:** Unpacks `.bin` files, maps memory
+  offsets and UI tables, extracts all image layers (PNG, JPG, GIF).
+* **Encoder (v1):** Compiles a `Project` JSON + PNG/JPG assets into a
+  valid `.bin` watchface (`h26/encoder.py`). Supports Layout, Frame,
+  Hand, Animation items. Byte-perfect round-trip on 3 real fixtures.
+* **CLI:** `python3 -m h26.cli compile|parse|info|verify` — no PyQt6
+  needed for parse/info/verify. See [CLI section](#-cli).
+* **Zero-Dependency LZ4 Decoder:** Pure-Python LZ4 decompression (no C
+  extensions). The encoder uses `lz4` (`pip install lz4`).
+* **Live Watchface Emulator:** Real-time PyQt6 canvas with moving hands.
+* **Spec-aligned UI Table parsing:** Every UIItem type from the H26 spec:
   * **Type 0** — Layout (regular + AOD) with UIItem indexes
   * **Type 0xF** — Hands (hour / minute / second) with rotation pivots
   * **Type 0x14** — Animations (both `0x34`/`0x3B` and the extended `0x70` variant)
@@ -56,7 +59,9 @@ The UI Table parser was hardened against the [H26 Watchface File Format Specific
 ## 🛠 Requirements
 
 * Python **3.8+**
-* PyQt6 (`pip install -r requirements.txt`)
+* PyQt6 (`pip install -r requirements.txt`) — only for the GUI emulator
+* `lz4` (`pip install lz4`) — for the encoder
+* `Pillow` (`pip install Pillow`) — for loading PNG/JPG in the encoder
 * [`ruff`](https://docs.astral.sh/ruff/) for linting (`pip install ruff`)
 
 ---
@@ -196,6 +201,43 @@ full rationale).
 | `0x47`/`0x48`/`0x4B`/`0x4C` | — | Angled font | `data_values=[dX, dY, ...]`, frame refs |
 | `0x5B` | — | Solid rectangle | `data_values=[counter, W, H, B, G, R]` |
 | `0x01`/`0x02`/`0x03`/`0x05`/`0x06`/`0x18`/`0x56` | — | Font / image frames | Frame refs |
+
+---
+
+## 🔧 CLI
+
+The `h26.cli` module provides four commands. No PyQt6 needed for
+`parse`, `info`, and `verify`.
+
+```bash
+# Compile a project JSON into a .bin watchface
+python3 -m h26.cli compile project.json -o watchface.bin
+
+# Parse a .bin and dump its structure as JSON
+python3 -m h26.cli parse watchface.bin
+
+# Quick summary (header fields, block counts)
+python3 -m h26.cli info watchface.bin
+
+# Round-trip test: parse → serialize → compare
+python3 -m h26.cli verify watchface.bin
+```
+
+Example `info` output:
+
+```
+File:    Clock20493_res.bin
+Size:    378,952 bytes
+Magic:   Sb@* ✓
+Preview: 0x20
+L3:      0x12C15 (len 0x5ECF)
+L2 (UI): 0x5C29E
+
+Blocks (85 total):
+  LZ4pal32: 85
+
+UI table: 1,450 bytes at 0x5C29E
+```
 
 ---
 
