@@ -137,3 +137,33 @@ TAG_NAMES = {
     (0x09, 0x00): "JPG",
     (0x03, 0x00): "GIF",
 }
+
+
+# ---------------------------------------------------------------------------
+# Hex dump
+# ---------------------------------------------------------------------------
+
+
+def generate_hex_dump(data: bytes, limit: int = 8192) -> str:
+    """Generate a hex dump string from raw bytes.
+
+    Args:
+        data: Raw bytes to dump.
+        limit: Maximum bytes to include (default 8192).
+
+    Returns:
+        Formatted hex dump string.
+    """
+    if not data:
+        return "No binary data available."
+    dump = []
+    size = min(len(data), limit)
+    for i in range(0, size, 16):
+        chunk = data[i : i + 16]
+        hex_str = " ".join(f"{b:02X}" for b in chunk)
+        ascii_str = "".join(chr(b) if 32 <= b <= 126 else "." for b in chunk)
+        dump.append(f"{i:08X}  {hex_str:<47}  |{ascii_str}|")
+
+    if len(data) > limit:
+        dump.append(f"\n... (Dump truncated for performance. Total size: {len(data)} bytes) ...")
+    return "\n".join(dump)

@@ -43,6 +43,33 @@ TAG_NAMES = {
 
 
 # ---------------------------------------------------------------------------
+# UI item type constants
+# ---------------------------------------------------------------------------
+UI_TYPE_LAYOUT = 0x00
+UI_TYPE_FRAME_1 = 0x01
+UI_TYPE_FRAME_2 = 0x02
+UI_TYPE_FRAME_3 = 0x03
+UI_TYPE_FRAME_5 = 0x05
+UI_TYPE_FRAME_6 = 0x06
+UI_TYPE_HAND = 0x0F
+UI_TYPE_ANIMATION = 0x14
+UI_TYPE_FRAME_18 = 0x18
+UI_TYPE_BUTTON = 0x37
+UI_TYPE_ANGLE_FONT = 0x47
+UI_TYPE_FRAME_56 = 0x56
+
+FRAME_TYPES = (
+    UI_TYPE_FRAME_1,
+    UI_TYPE_FRAME_2,
+    UI_TYPE_FRAME_3,
+    UI_TYPE_FRAME_5,
+    UI_TYPE_FRAME_6,
+    UI_TYPE_FRAME_18,
+    UI_TYPE_FRAME_56,
+)
+
+
+# ---------------------------------------------------------------------------
 # Block info
 # ---------------------------------------------------------------------------
 
@@ -234,6 +261,47 @@ def decode_bgr565a_to_rgba(block: bytes) -> tuple[bytes, int, int] | None:
     return bytes(rgba), w, h
 
 
+def decode_bgr565_to_rgba(block: bytes) -> tuple[bytes, int, int] | None:
+    """Decode a BGR565 block (opaque, no alpha) to raw RGBA bytes.
+
+    Returns (rgba_bytes, width, height) or None if invalid.
+    """
+    if len(block) < 0x11:
+        return None
+
+    b1, b2 = block[0], block[1]
+    if b1 != 0x49 or b2 != 0x01:
+        return None
+
+    size_val = vb_get_3b_be(block, 5)
+    w = size_val >> 12
+    h = size_val & 0xFFF
+
+    if w <= 0 or h <= 0 or w > 1000 or h > 1000:
+        return None
+
+    payload = block[0x10:]
+    unpacked = decompress_lz4_vb(payload)
+
+    rgba = bytearray(w * h * 4)
+    idx = 0
+    for y_pos in range(h):
+        for x_pos in range(w):
+            if idx + 1 < len(unpacked):
+                c565 = (unpacked[idx + 1] << 8) | unpacked[idx]
+                r = ((c565 & 0xF800) >> 11) * 255 // 31
+                g = ((c565 & 0x07E0) >> 5) * 255 // 63
+                b_val = (c565 & 0x001F) * 255 // 31
+                offset = (y_pos * w + x_pos) * 4
+                rgba[offset] = r
+                rgba[offset + 1] = g
+                rgba[offset + 2] = b_val
+                rgba[offset + 3] = 255
+                idx += 2
+
+    return bytes(rgba), w, h
+
+
 def extract_jpg_bytes(block: bytes) -> bytes | None:
     """Extract raw JPG bytes from a JPG block.
 
@@ -262,6 +330,8 @@ def decode_block_to_rgba(block: bytes) -> tuple[bytes, int, int] | None:
         return decode_lz4pal32_to_rgba(block)
     elif tag == TAG_BGR565A:
         return decode_bgr565a_to_rgba(block)
+    elif tag == TAG_BGR565:
+        return decode_bgr565_to_rgba(block)
     else:
         return None
 
@@ -388,10 +458,14 @@ def _parse_ui_table(b: bytes, l2: int) -> list[UIItemInfo]:
 def _calc_extended_length(ui_raw: bytes, pos: int, remaining: int, t_type: int, t_sub: int) -> int:
     """Calculate the extended bytes length for a UI item."""
 
-    if t_type == 0x00:  # Layout
+    if t_type == UI_TYPE_LAYOUT:
         if t_sub in (0x8C, 0x8D):
             loops = vb_get_4b_le(ui_raw, pos) if pos < len(ui_raw) else 0
-            return 4 + 4 + loops * 4
+            p = pos + 4
+            for _ in range(loops):
+                l3 = vb_get_4b_le(ui_raw, p) if p < len(ui_raw) else 0
+                p += 4 + l3 * 4
+            return p - pos
         elif t_sub == 0x34:
             loops = vb_get_4b_le(ui_raw, pos) if pos < len(ui_raw) else 0
             return 8 + loops * 8
@@ -401,18 +475,18 @@ def _calc_extended_length(ui_raw: bytes, pos: int, remaining: int, t_type: int, 
         else:
             return remaining
 
-    elif t_type in (0x01, 0x02, 3, 5, 6, 0x18, 0x56):  # Frame types
+    elif t_type in FRAME_TYPES:
         count = vb_get_4b_le(ui_raw, pos) if pos < len(ui_raw) else 0
         return 4 + count * 8
 
-    elif t_type == 0x0F:  # Hand
+    elif t_type == UI_TYPE_HAND:
         count = vb_get_4b_le(ui_raw, pos) if pos < len(ui_raw) else 0
         return 4 + count * 16
 
-    elif t_type == 0x14:  # Animation
+    elif t_type == UI_TYPE_ANIMATION:
         if t_sub in (0x34, 0x3B):
-            count = vb_get_4b_le(ui_raw, pos + 4) if pos + 4 < len(ui_raw) else 0
-            return 8 + count * 8
+            count = vb_get_4b_le(ui_raw, pos) if pos < len(ui_raw) else 0
+            return 4 + count * 8
         elif t_sub == 0x70:
             count = vb_get_4b_le(ui_raw, pos + 8) if pos + 8 < len(ui_raw) else 0
             return 12 + count * 8
@@ -420,12 +494,17 @@ def _calc_extended_length(ui_raw: bytes, pos: int, remaining: int, t_type: int, 
             count = vb_get_4b_le(ui_raw, pos) if pos < len(ui_raw) else 0
             return 4 + count * 8
 
-    elif t_type == 0x37:  # Button
-        return 12
+    elif t_type == UI_TYPE_BUTTON:
+        return 12 + 30  # 12 bytes data + 30 bytes string tail
 
-    elif t_type == 0x47:  # Angle font
-        count = vb_get_4b_le(ui_raw, pos) if pos < len(ui_raw) else 0
-        return 4 + count * 16
+    elif t_type == UI_TYPE_ANGLE_FONT:
+        counter = vb_get_4b_le(ui_raw, pos) if pos < len(ui_raw) else 0
+        # counter includes 2 extra slots for dX, dY
+        return 12 + max(counter - 2, 0) * 8
+
+    elif t_type == 0x5B:  # Solid color rectangle
+        counter = vb_get_4b_le(ui_raw, pos) if pos < len(ui_raw) else 0
+        return 12 + max(counter, 0)
 
     else:
         return remaining
@@ -434,12 +513,12 @@ def _calc_extended_length(ui_raw: bytes, pos: int, remaining: int, t_type: int, 
 def _parse_extended_data(ui_raw: bytes, ext_start: int, ext_len: int, item: UIItemInfo) -> None:
     """Parse extended data for specific UI item types."""
 
-    if item.type in (0x01, 0x02):  # Frame
+    if item.type in (UI_TYPE_FRAME_1, UI_TYPE_FRAME_2):  # Frame
         if ext_len >= 4:
             img_off = vb_get_4b_le(ui_raw, ext_start)
             item.frame_indices.append(img_off)
 
-    elif item.type == 0x0F:  # Hand
+    elif item.type == UI_TYPE_HAND:
         count = ext_len // 16 if ext_len >= 4 else 0
         pos = ext_start + 4  # Skip count field
         for _ in range(count):
@@ -451,44 +530,70 @@ def _parse_extended_data(ui_raw: bytes, ext_start: int, ext_len: int, item: UIIt
                 item.frame_indices.append(img_off)
                 pos += 16
 
-    elif item.type == 0x14:  # Animation
+    elif item.type == UI_TYPE_ANIMATION:
         if item.sub_type in (0x34, 0x3B):
-            count = vb_get_4b_le(ui_raw, ext_start + 4) if ext_len >= 8 else 0
+            # Standard animation: counter at ext_start, frames at ext_start+8
+            loops = vb_get_4b_le(ui_raw, ext_start) if ext_len >= 4 else 0
+            count = max(loops - 2, 0)
             pos = ext_start + 8
             for _ in range(count):
                 if pos + 8 <= len(ui_raw):
                     img_off = vb_get_4b_le(ui_raw, pos)
                     item.frame_indices.append(img_off)
                     pos += 8
-
-    elif item.type == 0x37:  # Button
-        if ext_len >= 12:
-            count = vb_get_4b_le(ui_raw, ext_start)
-            item.data_values.append(count)
-            for i in range(min(count, 3)):
-                val = vb_get_4b_le(ui_raw, ext_start + 4 + i * 4)
-                if val >= 0:
-                    item.data_values.append(val)
-
-    elif item.type == 0x47:  # Angle font
-        if ext_len >= 4:
-            count = vb_get_4b_le(ui_raw, ext_start)
-            item.data_values.append(count)
+        else:
+            # Fallback animation: counter at ext_start, frames at ext_start+4
+            count = vb_get_4b_le(ui_raw, ext_start) if ext_len >= 4 else 0
             pos = ext_start + 4
             for _ in range(count):
-                if pos + 16 <= len(ui_raw):
-                    dx = vb_get_4b_signed_be(ui_raw, pos + 4)
-                    dy = vb_get_4b_signed_be(ui_raw, pos + 8)
-                    img_off = vb_get_4b_le(ui_raw, pos + 12)
-                    item.data_values.extend([dx, dy])
+                if pos + 8 <= len(ui_raw):
+                    img_off = vb_get_4b_le(ui_raw, pos)
                     item.frame_indices.append(img_off)
-                    pos += 16
+                    pos += 8
+    elif item.type == UI_TYPE_BUTTON:
+        if ext_len >= 12:
+            # 4b unknown (always 3), 4b width, 4b height
+            item.data_values.extend(
+                [
+                    vb_get_4b_le(ui_raw, ext_start),
+                    vb_get_4b_signed_be(ui_raw, ext_start + 4),
+                    vb_get_4b_signed_be(ui_raw, ext_start + 8),
+                ]
+            )
+            # 30-byte NUL-terminated string tail for system screen names
+            str_tail = ui_raw[ext_start + 12 : ext_start + 12 + 30]
+            for tok in str_tail.split(b"\x00"):
+                if tok:
+                    try:
+                        item.system_screens.append(tok.decode("utf-8"))
+                    except UnicodeDecodeError:
+                        item.system_screens.append(tok.decode("utf-8", errors="replace"))
 
-    elif item.type == 0x5B and ext_len >= 16:  # Solid color rectangle
-        item.data_values = [
-            vb_get_4b_le(ui_raw, ext_start),
-            vb_get_4b_le(ui_raw, ext_start + 4),
-            vb_get_4b_le(ui_raw, ext_start + 8),
-            vb_get_4b_le(ui_raw, ext_start + 12),
-            vb_get_4b_le(ui_raw, ext_start + 16) if ext_len >= 20 else 0,
-        ]
+    elif item.type == UI_TYPE_ANGLE_FONT:
+        if ext_len >= 12:
+            counter = vb_get_4b_le(ui_raw, ext_start)
+            count = max(counter - 2, 0)
+            # dX, dY are the first two values in the extended area
+            item.data_values.extend(
+                [
+                    vb_get_4b_signed_be(ui_raw, ext_start + 4),  # dX
+                    vb_get_4b_signed_be(ui_raw, ext_start + 8),  # dY
+                ]
+            )
+            # Frame indices start at offset 12, each 8 bytes
+            pos = ext_start + 12
+            for _ in range(count):
+                if pos + 8 <= len(ui_raw):
+                    img_off = vb_get_4b_le(ui_raw, pos)
+                    item.frame_indices.append(img_off)
+                    pos += 8
+
+    elif item.type == 0x5B and ext_len >= 12:  # Solid color rectangle
+        counter = vb_get_4b_le(ui_raw, ext_start)
+        width = vb_get_4b_signed_be(ui_raw, ext_start + 4)
+        height = vb_get_4b_signed_be(ui_raw, ext_start + 8)
+        # Color bytes (B, G, R) starting at offset 12
+        b = ui_raw[ext_start + 12] if ext_len > 12 else 0
+        g = ui_raw[ext_start + 13] if ext_len > 13 else 0
+        r = ui_raw[ext_start + 14] if ext_len > 14 else 0
+        item.data_values = [counter, width, height, b, g, r]
