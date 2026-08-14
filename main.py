@@ -1,7 +1,5 @@
 import contextlib
-import logging
 import os
-import struct
 import sys
 from typing import List, Optional
 
@@ -27,22 +25,21 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-# Import shared utilities from h26 module
 from h26.decoder import (
     TAG_BGR565,
     TAG_BGR565A,
     TAG_GIF,
     TAG_JPG,
     TAG_LZ4PAL32,
-    TAG_UNK_34,
+    decode_block_to_rgba,
+    scan_blocks,
 )
 from h26.utils import (
-    decompress_lz4_vb,
-    vb_get_3b_be,
-    vb_get_4b_be,
-    vb_get_4b_le,
-    vb_get_4b_signed_be,
-    vb_get_4b_signed_le,
+    decompress_lz4_vb,  # noqa: F401 — used by tests
+    generate_hex_dump,
+    vb_get_3b_be,  # noqa: F401 — used by tests
+    vb_get_4b_signed_be,  # noqa: F401 — backward compat alias
+    vb_get_4b_signed_le,  # noqa: F401 — backward compat alias
 )
 
 # ==============================================================================
@@ -52,22 +49,7 @@ from h26.utils import (
 # See h26/utils.py for the implementations
 
 
-def generate_hex_dump(data: bytes, limit: int = 8192) -> str:
-    """Generates a professional hex dump string from raw bytes (limited to prevent UI freezing)"""
-    if not data:
-        return "No binary data available."
-    dump = []
-    size = min(len(data), limit)
-    for i in range(0, size, 16):
-        chunk = data[i : i + 16]
-        hex_str = " ".join(f"{b:02X}" for b in chunk)
-        ascii_str = "".join(chr(b) if 32 <= b <= 126 else "." for b in chunk)
-        dump.append(f"{i:08X}  {hex_str:<47}  |{ascii_str}|")
-
-    if len(data) > limit:
-        dump.append(f"\n... (Dump truncated for performance. Total size: {len(data)} bytes) ...")
-    return "\n".join(dump)
-
+# generate_hex_dump is now imported from h26.utils
 
 # ==============================================================================
 # 2. WATCHFACE STRUCTURE & DECODER ENGINE
@@ -154,113 +136,82 @@ class H26WatchfaceAnalyzer:
             return False
 
         # Magic Header Check
-        # Per the H26 spec, a valid H26 watchface always begins with the
-        # 4-byte signature 0x53 0x62 0x40 0x2A (ASCII: "Sb@*").
         if not (b[0] == 0x53 and b[1] == 0x62 and b[2] == 0x40 and b[3] == 0x2A):
             return False
 
         self.blocks.clear()
         self.ui_items.clear()
 
-        l2 = vb_get_4b_le(b, 0x1C)
-        self.l2 = l2
-        self.l3 = vb_get_4b_le(b, 0x14)
-        self.l4 = self.l3 + vb_get_4b_le(b, 0x18)
-
-        # Per the H26 spec, the main header carries:
-        #   0x00..0x03  magic "Sb@*"  (0x53 0x62 0x40 0x2A)
-        #   0x0C..0x0F  preview-block offset
-        #   0x14..0x17  "block with internal addressing" offset (l3)
-        #   0x18..0x1B  "block with internal addressing" length
-        #   0x1C..0x1F  UI Table offset                  (l2)
-        # The watchface name is a string living in the trailing block
-        # at offset 0x17 (terminated by a NUL or by EOF).
-        self.preview_offset = vb_get_4b_le(b, 0x0C)
+        # Use shared decoder to scan blocks and parse UI table
+        result = scan_blocks(b)
+        self.l2 = result["l2"]
+        self.l3 = result["l3"]
+        self.l4 = result["l3"] + result["l3_len"]
+        self.preview_offset = result["preview_offset"]
         self.wf_name_offset = 0x17
         self.wf_name = self._read_wf_name(b)
 
-        tpos = min(len(b) - 1, l2)
-        pos = vb_get_4b_le(b, 0x0C)
-
+        # Header block (raw bytes before first graphical block)
+        pos = self.preview_offset
         header_block = BlockInfo()
         header_block.base_offset = 0
         header_block.raw = b[:pos]
         header_block.b_type = BlockType.Header
         self.blocks.append(header_block)
 
-        while pos < tpos:
-            if pos + 1 >= len(b):
-                break
-            b1, b2 = b[pos], b[pos + 1]
-
+        # Convert decoder BlockInfo → GUI BlockInfo
+        for dec_block in result["blocks"]:
             bi = BlockInfo()
-            bi.base_offset = pos
-            bi.internal_offset = (pos - self.l3) if (self.l3 <= pos <= self.l4) else -1
-
-            l1 = 0
-            tag = (b1, b2)
-
+            bi.base_offset = dec_block.offset
+            bi.raw = dec_block.raw
+            # Map tag to BlockType
+            tag = dec_block.tag
             if tag == TAG_LZ4PAL32:
                 bi.b_type = BlockType.LZ4pal32
-                l1 = vb_get_4b_be(b, pos + 8) + 0x10
             elif tag == TAG_BGR565A:
                 bi.b_type = BlockType.LZ4raw565a
-                l1 = vb_get_4b_be(b, pos + 8) + 0x10
             elif tag == TAG_BGR565:
                 bi.b_type = BlockType.LZ4raw565
-                l1 = vb_get_4b_be(b, pos + 8) + 0x10
             elif tag == TAG_JPG:
                 bi.b_type = BlockType.JPG
-                l1 = vb_get_3b_be(b, pos + 2) + 0x10
             elif tag == TAG_GIF:
                 bi.b_type = BlockType.GIF
-                l1 = vb_get_3b_be(b, pos + 2) + 0x10
-            elif tag == TAG_UNK_34:
-                # Unknown block type with different header size
-                bi.b_type = BlockType.Unk
-                l1 = vb_get_3b_be(b, pos + 2) + 0x08
             else:
-                # Unknown block tag — record it instead of silently
-                # dropping it. Researchers need to see these to crack
-                # new block types.
-                bi.b_type = BlockType.Unk
-                bi.tag = (b1, b2)
-                # Be conservative: stop the scan if we hit too much
-                # unknown data, otherwise we'd loop forever on garbage.
-                if pos + 2 >= len(b):
-                    break
-                guess = vb_get_3b_be(b, pos + 2) + 0x10
-                l1 = guess if 0x10 < guess < len(b) - pos else 1
-                if pos + l1 > len(b):
-                    break
-                bi.raw = b[pos : pos + l1]
+                bi.b_type = BlockType.Unknown
                 self.unknown_blocks.append(bi)
-                pos += l1
                 continue
-
-            if pos + l1 > len(b):
-                break
-
-            bi.raw = b[pos : pos + l1]
+            # Convert to QImage
             bi.qimage = self._convert_block_to_image(bi.raw)
-
-            if (
-                bi.b_type in [BlockType.LZ4pal32, BlockType.LZ4raw565a, BlockType.LZ4raw565]
-                and len(bi.raw) > 16
-            ):
-                bi.raw_unpacked = decompress_lz4_vb(bi.raw[0x10:])
-
             self.blocks.append(bi)
-            pos += l1
 
-        if l2 < len(b) - 1:
-            ui_table_raw = b[l2:]
-            bi_ui = BlockInfo()
-            bi_ui.base_offset = l2
-            bi_ui.raw = ui_table_raw
-            bi_ui.b_type = BlockType.UITable
-            self.blocks.append(bi_ui)
-            self._parse_ui_table_fixed(ui_table_raw)
+        # UI Table block
+        ui_table_raw = b[self.l2 :]
+        bi_ui = BlockInfo()
+        bi_ui.base_offset = self.l2
+        bi_ui.raw = ui_table_raw
+        bi_ui.b_type = BlockType.UITable
+        self.blocks.append(bi_ui)
+
+        # Convert decoder UIItemInfo → GUI UIItem
+        for dec_item in result["ui_items"]:
+            uii = UIItem(dec_item.index)
+            uii.item_type = dec_item.type
+            uii.x = dec_item.x
+            uii.y = dec_item.y
+            uii.header_raw = b[
+                self.l2 + dec_item.header_offset : self.l2 + dec_item.header_offset + 20
+            ]
+            uii.header_values = [
+                dec_item.type,
+                dec_item.sub_type,
+                0,  # align (not stored in decoder)
+                dec_item.x,
+                dec_item.y,
+            ]
+            uii.data_values = list(dec_item.data_values)
+            uii.frame_indices = list(dec_item.frame_indices)
+            uii.system_screens = list(dec_item.system_screens)
+            self.ui_items.append(uii)
 
         return True
 
@@ -301,272 +252,23 @@ class H26WatchfaceAnalyzer:
         return b"".join(parts)
 
     def _convert_block_to_image(self, b: bytes) -> Optional[QImage]:
-        if len(b) < 0x11:
+        """Convert a graphical block to QImage using shared decoder."""
+        result = decode_block_to_rgba(b)
+        if result is None:
+            # Try JPG fallback (not handled by decode_block_to_rgba)
+            if len(b) >= 0x11 and b[0] == 0x09 and b[1] == 0x00:
+                payload = b[0x10:]
+                img = QImage()
+                img.loadFromData(payload)
+                return img
             return None
-        b1, b2 = b[0], b[1]
-        size_val = vb_get_3b_be(b, 5)
-        w = size_val >> 12
-        h = size_val & 0xFFF
+        rgba_bytes, w, h = result
+        img = QImage(rgba_bytes, w, h, QImage.Format.Format_ARGB32)
+        # QImage does not take ownership of the buffer, so keep a reference
+        img._rgba_data = rgba_bytes  # prevent GC
+        return img
 
-        if w <= 0 or h <= 0 or w > 1000 or h > 1000:
-            return None
-        payload = b[0x10:]
-
-        def qRgb(r, g, b_col, a=255):
-            return QColor(r, g, b_col, a).rgba()
-
-        if b1 == 0x4B and b2 == 0x01:
-            unpacked = decompress_lz4_vb(payload)
-            if len(unpacked) <= 0x400:
-                return None
-            colors = [
-                qRgb(unpacked[i + 2], unpacked[i + 1], unpacked[i], unpacked[i + 3])
-                for i in range(0, 0x400, 4)
-            ]
-            img = QImage(w, h, QImage.Format.Format_ARGB32)
-            idx = 0x400
-            for y in range(h):
-                for x in range(w):
-                    if idx < len(unpacked) and unpacked[idx] < len(colors):
-                        img.setPixel(x, y, colors[unpacked[idx]])
-                    idx += 1
-            return img
-
-        elif b1 == 0x48 and b2 == 0x01:
-            unpacked = decompress_lz4_vb(payload)
-            img = QImage(w, h, QImage.Format.Format_ARGB32)
-            idx = 0
-            for y in range(h):
-                for x in range(w):
-                    if idx + 2 < len(unpacked):
-                        c565 = (unpacked[idx + 1] << 8) | unpacked[idx]
-                        alpha = unpacked[idx + 2]
-                        r = ((c565 & 0xF800) >> 11) * 255 // 31
-                        g = ((c565 & 0x07E0) >> 5) * 255 // 63
-                        b_col = (c565 & 0x001F) * 255 // 31
-                        img.setPixel(x, y, qRgb(r, g, b_col, alpha))
-                        idx += 3
-            return img
-
-        elif b1 == 0x49 and b2 == 0x01:
-            unpacked = decompress_lz4_vb(payload)
-            img = QImage(w, h, QImage.Format.Format_RGB32)
-            idx = 0
-            for y in range(h):
-                for x in range(w):
-                    if idx + 1 < len(unpacked):
-                        c565 = (unpacked[idx + 1] << 8) | unpacked[idx]
-                        r = ((c565 & 0xF800) >> 11) * 255 // 31
-                        g = ((c565 & 0x07E0) >> 5) * 255 // 63
-                        b_col = (c565 & 0x001F) * 255 // 31
-                        img.setPixel(x, y, qRgb(r, g, b_col, 255))
-                        idx += 2
-            return img
-
-        elif b1 == 0x09 and b2 == 0x00:
-            img = QImage()
-            img.loadFromData(payload)
-            return img
-        return None
-
-    def _parse_ui_table_fixed(self, b: bytes):
-        pos = 0
-        tpos = len(b)
-        ui_index = 0
-
-        while pos < tpos:
-            if pos + 20 > tpos:
-                break
-
-            uii = UIItem(ui_index)
-            uii.header_raw = b[pos : pos + 20]
-            uii.header_values = [
-                vb_get_4b_le(b, pos),
-                vb_get_4b_le(b, pos + 4),
-                vb_get_4b_le(b, pos + 8),
-                vb_get_4b_signed_le(b, pos + 12),
-                vb_get_4b_signed_le(b, pos + 16),
-            ]
-
-            t_type = uii.header_values[0]
-            uii.item_type = t_type
-            uii.x = uii.header_values[3]
-            uii.y = uii.header_values[4]
-
-            l1 = 20
-            try:
-                if t_type == 0:
-                    l2 = uii.header_values[1]
-                    if l2 in [0x8C, 0x8D]:
-                        pos2 = pos + 20
-                        loops = vb_get_4b_le(b, pos2)
-                        pos2 += 4
-                        for _ in range(loops):
-                            l3 = vb_get_4b_le(b, pos2)
-                            pos2 += 4 + (l3 * 4)
-                        l1 = pos2 - pos
-                    elif l2 == 0x34:
-                        pos2 = pos + 20
-                        loops = vb_get_4b_le(b, pos2)
-                        pos2 += 8 + (loops * 8)
-                        l1 = pos2 - pos
-                    elif l2 in [0x0B, 0, 0x11, 0x17, 0x32, 0x28]:
-                        pos2 = pos + 20
-                        loops = vb_get_4b_le(b, pos2)
-                        pos2 += 4 + (loops * 8)
-                        l1 = pos2 - pos
-                    else:
-                        l1 = tpos - pos
-
-                elif t_type in [1, 2, 3, 5, 6, 0x18, 0x56]:
-                    count = vb_get_4b_le(b, pos + 20)
-                    l1 = 24 + (count * 8)
-                    pos2 = pos + 24
-                    for _ in range(count):
-                        img_offset = vb_get_4b_le(b, pos2)
-                        uii.frame_indices.append(img_offset)
-                        uii.pointer_offsets.append(pos2)
-                        pos2 += 8
-
-                elif t_type == 0x0F:
-                    count = vb_get_4b_le(b, pos + 20)
-                    l1 = 24 + (count * 16)
-                    pos2 = pos + 24
-                    for _ in range(count):
-                        pivot_x = vb_get_4b_le(b, pos2)
-                        pivot_y = vb_get_4b_le(b, pos2 + 4)
-                        img_offset = vb_get_4b_le(b, pos2 + 8)
-                        uii.data_values.extend([pivot_x, pivot_y])
-                        uii.frame_indices.append(img_offset)
-                        uii.pointer_offsets.append(pos2 + 8)
-                        pos2 += 16
-
-                elif t_type == 0x14:
-                    h1 = uii.header_values[1]
-                    if h1 in [0x34, 0x3B]:
-                        # Standard animation: header (3*4=12) + 4b X + 4b Y
-                        # + 4b counter + records*8  →  28 + n*8
-                        count = vb_get_4b_le(b, pos + 24)
-                        l1 = 28 + (count * 8)
-                        pos2 = pos + 28
-                    elif h1 == 0x70:
-                        # Extended animation: adds 2 unknown 4-byte words
-                        # before X/Y → counter is at pos+28 instead of
-                        # pos+24. Each frame record is still 8 bytes
-                        # (offset + length) per the H26 spec.
-                        count = vb_get_4b_le(b, pos + 28)
-                        l1 = 32 + (count * 8)
-                        pos2 = pos + 32
-                    else:
-                        # Fallback / unknown animation variant
-                        count = vb_get_4b_le(b, pos + 20)
-                        l1 = 24 + (count * 8)
-                        pos2 = pos + 24
-
-                    for _ in range(count):
-                        img_offset = vb_get_4b_le(b, pos2)
-                        uii.frame_indices.append(img_offset)
-                        uii.pointer_offsets.append(pos2)
-                        pos2 += 8
-
-                elif t_type == 0x37:
-                    # Per the H26 spec, Type 37 ("button" / system-screen
-                    # reference) has extended bytes:
-                    #   4b  unknown            (always 3 in observed samples)
-                    #   4b  Width
-                    #   4b  Height
-                    #   30b NUL-terminated strings identifying which
-                    #        system screens this button can jump to
-                    #        (WeatherScreen, CompassScreen,
-                    #         StepDetailScreen, HRScreen, ...).
-                    # The original parser only consumed l1 = 0x3E; we
-                    # now actually extract the fields.
-                    pos2 = pos + 20
-                    if pos2 + 12 > tpos:
-                        raise ValueError("Type 37 too short")
-                    uii.data_values.extend(
-                        [
-                            vb_get_4b_le(b, pos2),  # unknown (always 3)
-                            vb_get_4b_signed_be(b, pos2 + 4),  # width
-                            vb_get_4b_signed_be(b, pos2 + 8),  # height
-                        ]
-                    )
-                    # The 30-byte string tail may contain one or more
-                    # NUL-terminated tokens. Split on NULs, drop empties.
-                    str_tail = b[pos2 + 12 : pos2 + 12 + 30]
-                    for tok in str_tail.split(b"\x00"):
-                        if tok:
-                            with contextlib.suppress(UnicodeDecodeError):
-                                uii.system_screens.append(tok.decode("utf-8", errors="strict"))
-                                continue
-                            uii.system_screens.append(tok.decode("utf-8", errors="replace"))
-                    l1 = 0x3E
-
-                elif t_type in [0x47, 0x48, 0x4B, 0x4C]:
-                    # Per the H26 spec, "angled font" types (47/48/4B/4C)
-                    # carry a position-shift vector (dX, dY) applied to
-                    # each successive character — this is NOT a frame
-                    # rotation. The header counter equals
-                    #     frame_count + 2
-                    # (the extra 2 slots are dX and dY).
-                    counter = vb_get_4b_le(b, pos + 20)
-                    count = counter - 2
-                    count = max(count, 0)
-                    if pos + 32 > tpos:
-                        raise ValueError("Angled font header too short")
-                    # dX, dY are the first two values in the extended area
-                    uii.data_values.extend(
-                        [
-                            vb_get_4b_signed_be(b, pos + 24),  # dX
-                            vb_get_4b_signed_be(b, pos + 28),  # dY
-                        ]
-                    )
-                    l1 = 32 + (count * 8)
-                    pos2 = pos + 32
-                    for _ in range(count):
-                        img_offset = vb_get_4b_le(b, pos2)
-                        uii.frame_indices.append(img_offset)
-                        uii.pointer_offsets.append(pos2)
-                        pos2 += 8
-
-                elif t_type == 0x5B:
-                    # Per the H26 spec, Type 5B is a "solid rectangle"
-                    # with extended bytes:
-                    #   4b Counter (typically the number of color bytes
-                    #              that follow, observed = 3)
-                    #   4b Width
-                    #   4b Height
-                    #   3b Color (B, G, R)  -- alpha not used
-                    if pos + 32 > tpos:
-                        raise ValueError("Type 5B too short")
-                    counter = vb_get_4b_le(b, pos + 20)
-                    width = vb_get_4b_signed_be(b, pos + 24)
-                    height = vb_get_4b_signed_be(b, pos + 28)
-                    color_tail = b[pos + 32 : pos + 32 + max(0, counter)]
-                    # The spec states 3 bytes B/G/R. Defensively pad if
-                    # the counter is unusual.
-                    bgr = (
-                        color_tail[0] if len(color_tail) > 0 else 0,
-                        color_tail[1] if len(color_tail) > 1 else 0,
-                        color_tail[2] if len(color_tail) > 2 else 0,
-                    )
-                    uii.data_values.extend([counter, width, height, *bgr])
-                    l1 = 32 + max(0, counter)
-                else:
-                    l1 = tpos - pos
-            except (ValueError, IndexError, struct.error) as exc:
-                # Defensive fallback: if a UIItem branch hit a malformed
-                # sub-record we don't trust, advance to EOF for this item
-                # so the parser keeps going instead of infinite-looping.
-                logging.debug("UI item parse at pos=%d: %s", pos, exc)
-                l1 = tpos - pos
-
-            if l1 <= 0:
-                l1 = 20
-
-            pos += l1
-            self.ui_items.append(uii)
-            ui_index += 1
+    # _parse_ui_table_fixed removed — now using scan_blocks() + _parse_ui_table() from h26.decoder
 
 
 # ==============================================================================

@@ -65,9 +65,19 @@ def install_pyqt6_stub() -> None:
             Format_RGB16 = 1
             Format_Indexed8 = 2
 
-        def __init__(self, w=0, h=0, fmt=None):
-            self._w = w
-            self._h = h
+        def __init__(self, *args):
+            if len(args) == 3:
+                # QImage(w, h, fmt)
+                self._w, self._h, _fmt = args
+                self._data = None
+            elif len(args) == 4:
+                # QImage(data, w, h, fmt)
+                _data, self._w, self._h, _fmt = args
+                self._data = _data
+            else:
+                self._w = 0
+                self._h = 0
+                self._data = None
             self._px = {}
 
         def loadFromData(self, *_a, **_k):
@@ -182,10 +192,9 @@ def build_synthetic_binary() -> bytes:
     TYPE5B_PAYLOAD = be32(3) + be32s(100) + be32s(50) + bytes([0xFF, 0, 0])
     item5b = make_ui_5x4(0x5B, 0, 0, 30, 30) + TYPE5B_PAYLOAD
 
-    # Type 14: animation, 0 frames (24 bytes total — REDUCED 3*4 header)
-    TYPE14_PAYLOAD = be32s(0) + be32s(0) + be32(0)
-    item14 = struct.pack(">III", 0x14, 0x34, 0) + TYPE14_PAYLOAD
-
+    # Type 14: animation, 0 frames (24 bytes total)
+    # 20-byte header (5*4) + 4-byte counter=2 (0 frames: 2-2=0)
+    item14 = make_ui_5x4(0x14, 0x34, 0, 0, 0) + be32s(0)
     ui_table = item37 + item47 + item5b + item14
     struct.pack_into(">I", b, 0x1C, L2)
     b += ui_table
