@@ -201,10 +201,63 @@ def _assert_clock21592(an: main.H26WatchfaceAnalyzer, path: Path) -> None:
     assert len(an.unknown_blocks) == 0
 
 
+def _assert_clock20493(an: main.H26WatchfaceAnalyzer, path: Path) -> None:
+    """Specific structural assertions for Clock20493_res.bin.
+
+    This fixture is the richest in the suite: it exercises Type 37
+    (system-screen buttons) and Type 47 (angled fonts) — the two
+    parser paths the spec-gap patches (5ce4154) added. The negative
+    dX/dY values also validate the signed-BE byte reader.
+    """
+    assert an.preview_offset == 0x20
+    assert an.l2 == 0x5C29E
+    assert an.l3 == 0x12C15
+    assert an.l4 == 0x18AE4
+
+    type_counter = Counter(it.item_type for it in an.ui_items)
+    assert len(an.ui_items) == 19
+    assert type_counter[0x00] == 2  # regular + AOD layouts
+    assert type_counter[0x0F] == 5  # 3 hands × 2 layouts (no second on AOD)
+    assert type_counter[0x14] == 2
+    assert type_counter[0x37] == 3  # NEW: system-screen buttons
+    assert type_counter[0x47] == 7  # NEW: angled fonts
+
+    # Type 37: each button must have a system_screens list with
+    # exactly one entry, and the data_values must be [3, 116, 116]
+    # (the "3 + W=116 + H=116" pattern observed in the spec).
+    buttons = [it for it in an.ui_items if it.item_type == 0x37]
+    assert len(buttons) == 3
+    button_screens = {it.system_screens[0] for it in buttons if it.system_screens}
+    assert button_screens == {"TimerScreen", "StepDetailScreen", "WeatherScreen"}, (
+        f"unexpected button screens: {button_screens}"
+    )
+    for it in buttons:
+        assert it.data_values == [3, 116, 116], it.data_values
+        assert len(it.system_screens) == 1
+
+    # Type 47: angled fonts with negative dX/dY (validates signed BE)
+    angled = [it for it in an.ui_items if it.item_type == 0x47]
+    assert len(angled) == 7
+    # Every angled font must have at least one negative component
+    # in its (dX, dY) — this is the structural signature of the
+    # fixture and the regression test for the signed-BE fix.
+    assert any(it.data_values[0] < 0 for it in angled), "no negative dX found"
+    assert any(it.data_values[1] < 0 for it in angled), "no negative dY found"
+    # Each angled font references multiple glyph frames
+    assert all(len(it.frame_indices) > 0 for it in angled)
+    frame_counts = sorted(len(it.frame_indices) for it in angled)
+    print(f"  angled font frame counts: {frame_counts}")
+
+    lz4pal = sum(1 for b in an.blocks if b.b_type == main.BlockType.LZ4pal32)
+    assert lz4pal == 85
+    assert len(an.unknown_blocks) == 0
+
+
 # Map fixture name -> per-fixture detailed assertion
 _PER_FIXTURE_ASSERTIONS = {
     "Clock20517_res.bin": _assert_clock20517,
     "Clock21592_res.bin": _assert_clock21592,
+    "Clock20493_res.bin": _assert_clock20493,
 }
 
 

@@ -28,6 +28,23 @@ H26 watchfaces captured for parser testing only.
 * **Notes**: simpler analog watchface with a single layout, 2 hands,
   2 animations. Useful as a small-footprint regression target.
 
+### `Clock20493_res.bin`
+
+* **Size**: 378,952 bytes
+* **Coverage**:
+  * 85 LZ4pal32 image blocks
+  * 19 UI items across 5 types: 0x00 Layout (regular + AOD), 0x0F
+    hands (5), 0x14 animations, **0x37 system-screen buttons** (3
+    with the decoded NUL-terminated string list: TimerScreen,
+    StepDetailScreen, WeatherScreen), **0x47 angled fonts** (7
+    with negative dX/dY values, validating the signed-BE
+    decoder)
+  * 0 unknown blocks
+* **Notes**: the **richest** fixture in the suite. The presence of
+  Type 37 + Type 47 items exercises the most recently added
+  parser paths. Negative dX/dY values test the signed integer
+  decoder end-to-end.
+
 ## License
 
 Both fixtures are provided by the project author for parser
