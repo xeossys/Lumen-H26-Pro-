@@ -237,14 +237,20 @@ def build_lz4pal32_block(
 
     unwrapped = pal_bytes + index_bytes
 
-    # Header (16 bytes). Decoder reads vb_get_3b_be(b, 5), so the
-    # 3 bytes at offsets 5..7 hold the packed size little-endian.
-    header = bytearray(bytes(TAG_LZ4PAL32))  # offsets 0..1
-    header += b"\x00" * 3  # offsets 2,3,4 reserved
+    # Header (16 bytes).
+    # Offset 0..1: tag 0x4B 0x01 (LZ4pal32)
+    # Offset 5..7: packed size (w<<12|h), LE (decoder uses vb_get_3b_be = LE)
+    # Offset 8..11: compressed payload length, LE (decoder uses vb_get_4b_be = LE)
+    header = bytearray(bytes(TAG_LZ4PAL32))
+    header += b"\x00" * 3
     header += struct.pack("<I", _pack_size(width, height))[:3]  # 5..7 LE
-    header += b"\x00" * 8  # offsets 8..15 reserved
+    header += b"\x00" * 3  # offsets 8..10 (first 3 of length)
+    # We'll patch in the real payload length below.
+    header += b"\x00" * 5  # pad to 16 bytes
 
     payload = compress_payload(unwrapped)
+    # Patch data length at offset 8..11 (LE).
+    struct.pack_into("<I", header, 8, len(payload))
     return bytes(header) + payload
 
 
@@ -252,12 +258,18 @@ def build_jpg_preview_block(jpg_bytes: bytes) -> bytes:
     """Wrap raw JPEG bytes in the JPG block header tag (0x09 0x00).
 
     Block layout matches the decoder's JPG branch:
-        [0x09 0x00]  tag
-        [8 bytes]    reserved (the decoder ignores them)
-        [data]       the jpg payload from 0x10 onward
+        [0x09 0x00]         tag (offset 0..1)
+        [2..4]              payload length, 3-byte LE (decoder uses vb_get_3b_be)
+        [0x10..]            the jpg payload
     """
     if not jpg_bytes:
         raise ImageCodecError("empty JPEG payload")
-    header = bytearray(bytes(TAG_JPG))  # 0x09 0x00
-    header += b"\x00" * 14  # pad to 0x10
+    header = bytearray(0x10)
+    header[0] = TAG_JPG[0]
+    header[1] = TAG_JPG[1]
+    # Write payload length as 3-byte LE at offset 2 (vb_get_3b_be).
+    plen = len(jpg_bytes)
+    header[2] = plen & 0xFF
+    header[3] = (plen >> 8) & 0xFF
+    header[4] = (plen >> 16) & 0xFF
     return bytes(header) + jpg_bytes
