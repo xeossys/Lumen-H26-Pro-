@@ -1,0 +1,51 @@
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+extend-exclude = ["__pycache__", ".venv", "venv", "build", "dist", ".ruff_cache"]
+
+[tool.ruff.lint]
+# Project policy:
+# - F:    pyflakes — real bugs (unused imports, undefined names, ...)
+# - I:    import sort
+# - UP:   pyupgrade (modernize syntax where safe)
+# - SIM:  simplify (collapsible if, etc.)
+# - PLR:  pylint refactor (in-min-max, etc.)
+# - BLE:  blind-except
+# - S:    security (try-except-pass, etc.)
+# We intentionally DISABLE the noisy/style-only rules that don't
+# add value to a 870-line PyQt6 desktop tool:
+#   - E, W  pycodestyle warnings: GUI tools carry a lot of long lines
+#          and inline CSS in strings; not worth the churn
+#   - D     docstrings: not every helper needs a docstring; docstrings
+#          where they help are kept manually
+#   - COM   commas: noisy on small tuples
+#   - TID   tidy imports: too aggressive for PyQt6 patterns
+#   - N     naming: CamelCase is the Qt convention here
+#   - ANN   annotations: not all locals need them
+#   - ARG   unused args: Qt slots intentionally have unused args
+#   - PLR091* control-flow args: Qt callbacks naturally have many
+select = ["F", "I", "UP", "SIM", "PLR", "BLE", "S"]
+ignore = [
+    "PLR2004", # magic value (we have a lot of binary offsets)
+    "PLR0912", # too many branches
+    "PLR0913", # too many arguments
+    "PLR0915", # too many statements
+    "PLR0911", # too many return statements
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests are allowed to be a bit looser; PyQt entrypoints have noisy patterns.
+# S101 asserts are the whole point of a test
+# S108 the test writes an explicit /tmp path; not user-controlled input
+# BLE001 we explicitly catch all errors from a stubbed import to keep the
+#         test informative when the GUI deps are missing
+"tests/conftest.py" = ["E402", "F401", "S101", "S108", "BLE001"]
+"tests/test_smoke.py" = ["E402", "F401", "S101", "S108", "BLE001"]
+"tests/test_real_file.py" = ["E402", "F401", "S101", "S108", "BLE001"]
+"tests/test_roundtrip.py" = ["E402", "F401", "S101", "S108", "BLE001"]
+"tests/test_encoder.py" = ["E402", "F401", "S101", "S108", "BLE001"]
+"tests/test_image_codec.py" = ["E402", "F401", "S101", "S108", "BLE001"]
+"tests/test_compile.py" = ["E402", "F401", "S101", "S108", "BLE001"]
+"tests/test_image_swap.py" = ["E402", "F401", "S101", "S108", "BLE001"]
+"tests/test_cli.py" = ["S101", "S603", "BLE001"]
+"h26/cli.py" = ["S101", "BLE001"]
