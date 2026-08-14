@@ -7,11 +7,7 @@
 ![Contributions](https://img.shields.io/badge/contributions-welcome-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-purple.svg)
 
-**OpenLumen H26pro+** is a pure-Python reverse-engineering and modding suite built for smartwatch Watchface developers. By translating proprietary H26 binary structures into editable data, OpenLumen bridges the gap between raw hexadecimal code and visual design.
-
-Currently, OpenLumen functions as a highly advanced **Decompiler, Analyzer, and Emulator**. You can unpack `_res binary` files, extract raw assets, decode UI layouts, and emulate analog clock behaviors.
-
-⚠️ **Help Wanted:** We are currently building the **Compiler & Repacker** phase of this project and are actively looking for Python developers and reverse-engineers to help us crack the LZ4 encoding injection! (See the [Help Wanted / Roadmap](#-help-wanted--roadmap-the-compiler) section below).
+**OpenLumen H26pro+** is a pure-Python reverse-engineering and modding suite for H26 smartwatch watchfaces. It can **decompile**, **analyze**, **compile**, and **verify** `.bin` watchface files — bridging the gap between raw binary and visual design.
 
 ---
 
@@ -24,12 +20,19 @@ The UI Table parser was hardened against the [H26 Watchface File Format Specific
 
 ---
 
-## ✨ Current Features (v1.0)
+## ✨ Current Features
 
-* **Full Decompilation & Extraction:** Automatically unpacks `.bin` files, maps memory offsets and UI tables, and extracts all valid image layers (PNG, JPG, GIF) to your local drive.
-* **Zero-Dependency LZ4 Decoder:** Features built-in, pure-Python LZ4 decompression. No C-compilers, build tools, or external binary dependencies required.
-* **Live Watchface Emulator:** A real-time rendering canvas that recreates the watchface on screen with moving hands.
-* **Spec-aligned UI Table parsing:** Every UIItem type defined in the H26 spec is now decoded into structured Python fields:
+* **Full Decompilation & Extraction:** Unpacks `.bin` files, maps memory
+  offsets and UI tables, extracts all image layers (PNG, JPG, GIF).
+* **Encoder (v1):** Compiles a `Project` JSON + PNG/JPG assets into a
+  valid `.bin` watchface (`h26/encoder.py`). Supports Layout, Frame,
+  Hand, Animation items. Byte-perfect round-trip on 3 real fixtures.
+* **CLI:** `python3 -m h26.cli compile|parse|info|verify|export|build` — no PyQt6
+  needed for parse/info/verify/export/build. See [CLI section](#-cli).
+* **Zero-Dependency LZ4 Decoder:** Pure-Python LZ4 decompression (no C
+  extensions). The encoder uses `lz4` (`pip install lz4`).
+* **Live Watchface Emulator:** Real-time PyQt6 canvas with moving hands.
+* **Spec-aligned UI Table parsing:** Every UIItem type from the H26 spec:
   * **Type 0** — Layout (regular + AOD) with UIItem indexes
   * **Type 0xF** — Hands (hour / minute / second) with rotation pivots
   * **Type 0x14** — Animations (both `0x34`/`0x3B` and the extended `0x70` variant)
@@ -56,9 +59,11 @@ The UI Table parser was hardened against the [H26 Watchface File Format Specific
 ## 🛠 Requirements
 
 * Python **3.8+**
-* PyQt6 (`pip install -r requirements.txt`)
-* [`ruff`](https://docs.astral.sh/ruff/) for linting (`pip install ruff`)
-
+* [uv](https://docs.astral.sh/uv/) (recommended) or pip for dependency management
+* PyQt6 — only for the GUI emulator
+* `lz4` — for the encoder
+* `Pillow` — for loading PNG/JPG in the encoder
+* [`ruff`](https://docs.astral.sh/ruff/) for linting
 ---
 
 ## 🚀 Quick Start
@@ -66,6 +71,12 @@ The UI Table parser was hardened against the [H26 Watchface File Format Specific
 ```bash
 git clone https://github.com/paraflu/Lumen-H26-Pro-Encoder.git
 cd Lumen-H26-Pro-Encoder
+
+# With uv (recommended)
+uv sync
+uv run python main.py
+
+# Or with pip
 pip install -r requirements.txt
 python3 main.py
 ```
@@ -97,17 +108,26 @@ for item in an.ui_items:
 
 ## 🧪 Development
 
-### Run the smoke test
-
-The repo includes a synthetic-binary smoke test that exercises every
-parsed UI type (37, 47, 5B) and verifies the decoded fields match
-expectations. **Always run it after touching the parser.**
+### Setup
 
 ```bash
-python3 _smoke_test.py
+# Install all dependencies (including dev tools)
+uv sync --all-extras
 ```
 
-Expected last line: `ALL SMOKE TESTS PASSED ✅`.
+### Run the tests
+
+The repo includes a comprehensive test suite under `tests/`:
+
+```bash
+uv run python tests/test_smoke.py          # synthetic parser smoke test
+uv run python tests/test_real_file.py      # 3 real fixture assertions
+uv run python tests/test_roundtrip.py      # round-trip + idempotency
+uv run python tests/test_encoder.py        # encoder data model + JSON I/O
+uv run python tests/test_image_codec.py    # image quantization + block encoding
+uv run python tests/test_compile.py        # full encoder pipeline integration
+```
+Expected last line for each: `ALL ... PASSED ✅`.
 
 ### Linting
 
@@ -115,9 +135,9 @@ The project uses [ruff](https://docs.astral.sh/ruff/) for linting. The
 configuration lives in `pyproject.toml`.
 
 ```bash
-ruff check .          # lint
-ruff format --check . # style (read-only)
-ruff format .         # auto-format
+uv run ruff check .          # lint
+uv run ruff format --check . # style (read-only)
+uv run ruff format .         # auto-format
 ```
 
 The config enables the rules that catch real bugs (`F`, `BLE`, `S`)
@@ -138,6 +158,40 @@ full rationale).
 * Prefer logging (`logging.debug` / `logging.warning`) over `print`
   for diagnostics — the GUI's `QStatusBar` reads from the logging
   system.
+
+
+---
+
+## 🔨 Building Executables
+
+Build standalone executables for distribution:
+
+```bash
+# Install PyInstaller
+uv sync --all-extras
+
+# Build for current platform
+uv run python build.py
+
+# Clean build artifacts
+uv run python build.py --clean
+```
+
+The executable will be created in `dist/LumenH26Pro/`.
+
+### CI/CD Releases
+
+The project uses GitHub Actions to automatically build executables when a tag is pushed:
+
+```bash
+# Create and push a tag
+git tag 2024.1.1
+git push origin 2024.1.1
+```
+
+This will create a GitHub Release with:
+- `LumenH26Pro-linux-x86_64.tar.gz` — Linux executable
+- `LumenH26Pro-windows-x86_64.zip` — Windows executable
 
 ---
 
@@ -196,20 +250,145 @@ full rationale).
 
 ---
 
-## 🚧 Help Wanted / Roadmap: The Compiler
+## 🔧 CLI
 
-The end goal is a **Compiler & Repacker** that can inject new PNG/JPG
-assets into an existing `.bin` file while preserving all the global
-memory offsets. To make that possible, we still need to crack the
-**injection** of LZ4-compressed blocks — the current `decompress_lz4_vb`
-function only handles the *decode* path.
+The `h26.cli` module provides six commands. No PyQt6 needed for
+`parse`, `info`, `verify`, `export`, and `build`.
 
-**What needs to be built:**
-1. **LZ4 RGB565 / Palette32 Encoder:** A pure-Python encoder that can take a custom `.png`, convert it to the watch's specific 16-bit RGB565 or 8-bit palette format, and compress it using standard LZ4 block compression.
-2. **Memory Alignment Logic:** If a newly compressed image is smaller than the original, we need a script to pad the remaining space with `0x00` (Null bytes) to preserve the exact global memory offsets for the rest of the `.bin` file.
-3. **Safety Locks:** Logic to block injections if the new asset's binary size exceeds the original memory slot (to prevent soft-bricking).
+```bash
+# Compile a project JSON into a .bin watchface
+uv run python -m h26.cli compile project.json -o watchface.bin
 
-If you want to contribute, please fork the repository, open a Pull Request, or start a discussion in the Issues tab!
+# Parse a .bin and dump its structure as JSON
+uv run python -m h26.cli parse watchface.bin
+
+# Quick summary (header fields, block counts)
+uv run python -m h26.cli info watchface.bin
+
+# Round-trip test: parse → serialize → compare
+uv run python -m h26.cli verify watchface.bin
+
+# Export a .bin to a folder with images + project.json
+uv run python -m h26.cli export watchface.bin -o project/
+
+# Export a .bin to a zip archive
+uv run python -m h26.cli export watchface.bin -o project.zip
+
+# Build a .bin from a folder or zip with project.json + images
+uv run python -m h26.cli build project/ -o watchface.bin
+uv run python -m h26.cli build project.zip -o watchface.bin
+```
+
+You can also use the shortcut `cli.py`:
+
+```bash
+uv run python cli.py export watchface.bin -o project/
+uv run python cli.py build project/ -o watchface.bin
+```
+
+Example `info` output:
+
+```
+File:    Clock20493_res.bin
+Size:    378,952 bytes
+Magic:   Sb@* ✓
+Preview: 0x20
+L3:      0x12C15 (len 0x5ECF)
+L2 (UI): 0x5C29E
+
+Blocks (85 total):
+  LZ4pal32: 85
+
+UI table: 1,450 bytes at 0x5C29E
+```
+
+---
+
+## ✅ Encoder (v1)
+
+The encoder (`h26/encoder.py`) compiles a `Project` data model into a
+valid `.bin` watchface file. It is the inverse of the parser:
+PNG/JPG assets → LZ4pal32 blocks → H26 binary.
+
+**What v1 supports:**
+- LZ4pal32 image blocks (8-bit paletted, 256 colors)
+- JPG preview blocks
+- UI items: Layout (0x00), Frame (0x01), Hand (0x0F), Animation (0x14)
+- Byte-perfect round-trip: `compile(project)` → `analyzer.serialize()` → identical bytes
+
+**What v1 does NOT support (contributions welcome):**
+- BGR565 / BGR565A blocks
+- AOD layouts (sub-type 0x8D)
+- Type 37 (system-screen buttons), 47/48/4B/4C (angled fonts), 5B (solid rectangles)
+- Animation frame-by-frame editing in the GUI
+
+### Quick start (programmatic)
+
+```python
+from h26 import Project, Layout, FrameItem, ImageAsset, compile
+
+project = Project(
+    name="my_watchface",
+    images=[ImageAsset(name="bg", source_path="bg.png", width=240, height=240)],
+    layout=Layout(children=[FrameItem(x=0, y=0, image_name="bg")]),
+)
+data = compile(project)
+with open("my_watchface.bin", "wb") as f:
+    f.write(data)
+```
+
+Requires `lz4` and `Pillow` (installed automatically with `uv sync`).
+
+### Export & Build (CLI)
+
+The CLI also supports exporting a `.bin` to a folder/zip and rebuilding it:
+
+```bash
+# Export: .bin → folder with images + project.json
+uv run python -m h26.cli export watchface.bin -o project/
+
+# Build: folder/zip → .bin
+uv run python -m h26.cli build project/ -o watchface.bin
+```
+
+### Test suite
+
+```bash
+uv run python tests/test_encoder.py        # data model + JSON I/O (7 tests)
+uv run python tests/test_image_codec.py    # quantize + block encoding (10 tests)
+uv run python tests/test_compile.py        # full pipeline integration (7 tests)
+uv run python tests/test_smoke.py          # synthetic parser smoke test
+uv run python tests/test_real_file.py      # 3 real fixture assertions
+uv run python tests/test_roundtrip.py      # round-trip + idempotency
+```
+
+---
+
+## 🚧 Roadmap: GUI Encoder Tab (contributions welcome)
+
+The encoder CLI/API is complete. The next step is a **GUI tab** in
+the existing PyQt6 app that lets users:
+
+1. Drag-and-drop PNG/JPG assets onto a virtual canvas
+2. Position UI items (frames, hands, animations) visually
+3. Click "Compile" to produce a valid `.bin` file
+4. "Test load" → re-parse the compiled file in the existing View tab
+
+See the implementation plan in `~/.hermes/plans/h26-encoder.md`
+(Tasks 11-13) for the detailed wireframe and code structure.
+
+**What remains to be built:**
+1. **GUI Encoder Tab** (Tasks 11-13): PyQt6 interface with drag-and-drop
+   canvas, property editing, and a "Compile" button. See the plan.
+2. **BGR565 / BGR565A block encoding**: currently only LZ4pal32 is supported.
+3. **AOD layout support** (sub-type 0x8D): the parser reads it but the
+   encoder doesn't emit it yet.
+4. **Additional UIItem types**: 0x37 (buttons), 0x47/48/4B/4C (angled
+   fonts), 0x5B (solid rectangles) — the parser decodes them but the
+   encoder rejects them with a clear error message.
+
+If you want to contribute, please fork the repository, open a Pull
+Request, or start a discussion in the Issues tab!
 
 ---
 
