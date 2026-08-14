@@ -7,7 +7,7 @@
 
 - **Stack**: Python 3.8+, PyQt6 (GUI only), pure-Python LZ4 decoder, `lz4`+`Pillow` for encoder.
 - **Lint**: `ruff` (config in `pyproject.toml`). Run `ruff check .` before any commit.
-- **Tests**: `python3 tests/test_smoke.py` (parser) + `python3 tests/test_compile.py` (encoder) + `python3 tests/test_roundtrip.py` + `python3 tests/test_real_file.py` + `python3 tests/test_encoder.py` + `python3 tests/test_image_codec.py`. All must pass before any commit.
+- **Tests**: `uv run pytest tests/ -v`. All 79 tests must pass before any commit.
 - **Branch model**: Git Flow. `feature/*` and `fix/*` → `develop`. `hotfix/*` → `main`. Tags use `YYYY.M.D`.
 - **Push policy**: agents must NOT push to remote without explicit user instruction. Local git only by default.
 - **Credentials**: there are none in this repo. If you find any, stop and tell Andrea.
@@ -23,9 +23,11 @@ Lumen-H26-Pro-Encoder/
 │   ├── project.py           # Data model: Project, Layout, UI items, JSON I/O
 │   ├── image_codec.py       # Quantize RGBA→256 pal, LZ4pal32 block, JPG block
 │   ├── encoder.py           # compile(project) → bytes pipeline
-│   └── cli.py               # CLI: compile, parse, info, verify
+│   └── cli.py               # CLI: compile, parse, info, verify, export, build
+
 ├── tests/
-│   ├── conftest.py          # PyQt6 stub + build_synthetic_binary() helper
+│   ├── conftest.py          # PyQt6 stub + fixtures + build_synthetic_binary()
+
 │   ├── test_smoke.py        # Synthetic parser smoke test
 │   ├── test_real_file.py    # 3 real fixture structural assertions
 │   ├── test_roundtrip.py    # Round-trip + idempotency
@@ -94,12 +96,7 @@ Before ANY commit that touches the parser or encoder:
 1. `uv run python -m py_compile main.py` — smoke compile
 2. `uv run ruff check .` — must be clean
 3. `uv run ruff format --check .` — must be clean
-4. `uv run python tests/test_smoke.py` — `ALL SMOKE TESTS PASSED ✅`
-5. `uv run python tests/test_real_file.py` — `ALL 3 REAL-FILE FIXTURE(S) PASSED ✅`
-6. `uv run python tests/test_roundtrip.py` — `ALL ROUND-TRIP TESTS PASSED ✅`
-7. `uv run python tests/test_encoder.py` — `ALL ENCODER PROJECT TESTS PASSED`
-8. `uv run python tests/test_image_codec.py` — `ALL IMAGE CODEC TESTS PASSED`
-9. `uv run python tests/test_compile.py` — `ALL COMPILE INTEGRATION TESTS PASSED`
+4. `uv run pytest tests/ -v` — all tests must pass
 
 If ANY test fails, do not commit. Fix it first.
 

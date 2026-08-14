@@ -1,303 +1,210 @@
 """
 Structural assertions for every real H26 fixture in tests/fixtures/.
 
-The test suite auto-discovers all ``*.bin`` files in
-``tests/fixtures/`` and runs the same structural assertions on each.
-This means new fixtures can be added by simply dropping a file in
-the directory — no test code change required.
-
-For each fixture we assert:
-* the magic header is ``Sb@*``
-* the document load returns True
-* the analyzer exposes ``preview_offset``, ``l2``, ``l3``, ``l4``
-* at least one LZ4 image block was decoded (the file isn't empty)
-* at least one UIItem was parsed
-* the round-trip ``analyzer.serialize()`` produces a byte-perfect
-  copy of the input
-* re-parsing the serialized output yields the same UI table and
-  block list
-
-Per-fixture expected values (e.g. block counts, hand pivots) live
-in the per-fixture functions at the bottom of this file and are
-skipped automatically if not defined.
-
-Run with::
-
-    python3 tests/test_real_file.py
+Auto-discovers all ``*.bin`` files and runs generic structural
+assertions on each. Per-fixture detailed assertions are in separate
+test classes.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-import tempfile
 from collections import Counter
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from tests.conftest import (  # noqa: E402
-    FIXTURES_DIR,
-    MAIN_PY,
-    install_pyqt6_stub,
-)
+import pytest
 
-install_pyqt6_stub()
+from tests.conftest import FIXTURES_DIR, load_fixture, reparse_bytes
 
-
-# ---- Module loader ----------------------------------------------------
-
-spec = importlib.util.spec_from_file_location("main", MAIN_PY)
-assert spec is not None and spec.loader is not None
-main = importlib.util.module_from_spec(spec)
-try:
-    spec.loader.exec_module(main)
-except Exception as exc:
-    # QApplication-using code at the bottom of main.py is unreachable
-    # in this test, so the import is safe to swallow.
-    print(f"[warn] main.py import warning: {exc}")
+# ---------------------------------------------------------------------------
+# Parametrized fixture discovery
+# ---------------------------------------------------------------------------
 
 
-# ---- Helpers -----------------------------------------------------------
-
-
-def _load_fixture(path: Path) -> object:
-    an = main.H26WatchfaceAnalyzer()
-    assert an.load_file(str(path)), f"load_file returned False on {path.name}"
-    return an
-
-
-def _reparse_bytes(data: bytes) -> object:
-    an = main.H26WatchfaceAnalyzer()
-    with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
-        tmp.write(data)
-        tmp_path = tmp.name
-    try:
-        assert an.load_file(tmp_path)
-    finally:
-        Path(tmp_path).unlink(missing_ok=True)
-    return an
-
-
-def _list_fixtures() -> list[Path]:
-    if not FIXTURES_DIR.is_dir():
-        return []
+def _fixture_params():
     return sorted(FIXTURES_DIR.glob("*.bin"))
 
 
-# ---- Generic assertions (run for every fixture) -----------------------
+def _fixture_ids():
+    return [p.stem for p in sorted(FIXTURES_DIR.glob("*.bin"))]
 
 
-def _assert_generic(an: main.H26WatchfaceAnalyzer, path: Path) -> None:
-    inp = path.read_bytes()
-    assert inp[:4] == b"Sb@*", f"{path.name}: bad magic {inp[:4]!r}"
+# ---------------------------------------------------------------------------
+# Generic assertions (run for every fixture)
+# ---------------------------------------------------------------------------
 
-    # Header fields
+
+@pytest.mark.parametrize("path", _fixture_params(), ids=_fixture_ids())
+def test_magic_header(path):
+    data = path.read_bytes()
+    assert data[:4] == b"Sb@*"
+
+
+@pytest.mark.parametrize("path", _fixture_params(), ids=_fixture_ids())
+def test_load_file(main_module, path):
+    an = load_fixture(main_module, path)
     assert an.preview_offset > 0
-    assert an.l2 > 0 and an.l2 < len(inp)
+    assert an.l2 > 0 and an.l2 < len(path.read_bytes())
     assert an.l3 >= 0
     assert an.l4 >= an.l3
 
-    # At least one graphical block decoded
+
+@pytest.mark.parametrize("path", _fixture_params(), ids=_fixture_ids())
+def test_has_graphical_blocks(main_module, path):
+    an = load_fixture(main_module, path)
     graphical_types = (
-        main.BlockType.LZ4pal32,
-        main.BlockType.LZ4raw565,
-        main.BlockType.LZ4raw565a,
-        main.BlockType.JPG,
-        main.BlockType.GIF,
+        main_module.BlockType.LZ4pal32,
+        main_module.BlockType.LZ4raw565,
+        main_module.BlockType.LZ4raw565a,
+        main_module.BlockType.JPG,
+        main_module.BlockType.GIF,
     )
     n_graphical = sum(1 for b in an.blocks if b.b_type in graphical_types)
-    assert n_graphical > 0, f"{path.name}: no graphical blocks decoded"
+    assert n_graphical > 0
 
-    # At least one UIItem parsed
-    assert len(an.ui_items) > 0, f"{path.name}: zero UIItems"
 
-    # Round-trip byte-perfect
+@pytest.mark.parametrize("path", _fixture_params(), ids=_fixture_ids())
+def test_has_ui_items(main_module, path):
+    an = load_fixture(main_module, path)
+    assert len(an.ui_items) > 0
+
+
+@pytest.mark.parametrize("path", _fixture_params(), ids=_fixture_ids())
+def test_roundtrip_byte_perfect(main_module, path):
+    an = load_fixture(main_module, path)
+    inp = path.read_bytes()
     out = an.serialize()
-    assert out == inp, f"{path.name}: serialize() not byte-perfect (in={len(inp)} out={len(out)})"
+    assert out == inp
 
-    # Re-parse the round-tripped bytes
-    an2 = _reparse_bytes(out)
-    assert len(an2.ui_items) == len(an.ui_items), (
-        f"{path.name}: ui_items count differs after re-parse "
-        f"({len(an.ui_items)} -> {len(an2.ui_items)})"
-    )
+
+@pytest.mark.parametrize("path", _fixture_params(), ids=_fixture_ids())
+def test_roundtrip_idempotent(main_module, path):
+    an = load_fixture(main_module, path)
+    out = an.serialize()
+    an2 = reparse_bytes(main_module, out)
+    assert len(an2.ui_items) == len(an.ui_items)
     assert len(an2.blocks) == len(an.blocks)
 
 
-# ---- Per-fixture detailed assertions ---------------------------------
+# ---------------------------------------------------------------------------
+# Per-fixture detailed assertions
+# ---------------------------------------------------------------------------
 
 
-def _assert_clock20517(an: main.H26WatchfaceAnalyzer, path: Path) -> None:
+class TestClock20517:
     """Specific structural assertions for Clock20517_res.bin."""
-    assert an.preview_offset == 0x20
-    assert an.l2 == 0x1600C
-    assert an.l3 == 0x6083
-    assert an.l4 == 0x9523
 
-    type_counter = Counter(it.item_type for it in an.ui_items)
-    assert len(an.ui_items) == 14
-    assert type_counter[0x00] == 2
-    assert type_counter[0x01] == 2
-    assert type_counter[0x02] == 2
-    assert type_counter[0x0F] == 5
-    assert type_counter[0x14] == 3
+    @pytest.fixture(autouse=True)
+    def setup(self, main_module):
+        path = FIXTURES_DIR / "Clock20517_res.bin"
+        self.an = load_fixture(main_module, path)
 
-    # Hands with their pivots
-    expected = [
-        (0x0B, 192, 126, [13, 129]),
-        (0x0C, 192, 72, [13, 184]),
-        (0x0D, 195, 68, [10, 188]),
-        (0x0B, 192, 126, [13, 129]),
-        (0x0C, 192, 72, [13, 184]),
-    ]
-    hands = [it for it in an.ui_items if it.item_type == 0x0F]
-    assert len(hands) == 5
-    for got, (sub, x, y, pivots) in zip(hands, expected, strict=True):
-        assert got.header_values[1] == sub
-        assert got.x == x and got.y == y
-        assert got.data_values[:2] == pivots
+    def test_header_fields(self):
+        assert self.an.preview_offset == 0x20
+        assert self.an.l2 == 0x1600C
+        assert self.an.l3 == 0x6083
+        assert self.an.l4 == 0x9523
 
-    # Layouts: regular + AOD
-    layouts = [it for it in an.ui_items if it.item_type == 0x00]
-    assert sorted(it.header_values[1] for it in layouts) == [0x8C, 0x8D]
+    def test_item_counts(self):
+        tc = Counter(it.item_type for it in self.an.ui_items)
+        assert len(self.an.ui_items) == 14
+        assert tc[0x00] == 2
+        assert tc[0x01] == 2
+        assert tc[0x02] == 2
+        assert tc[0x0F] == 5
+        assert tc[0x14] == 3
 
-    # The big animation has 14 frames
-    anims = [it for it in an.ui_items if it.item_type == 0x14]
-    big_anim = max(anims, key=lambda it: len(it.frame_indices))
-    assert len(big_anim.frame_indices) == 14
+    def test_hands(self):
+        expected = [
+            (0x0B, 192, 126, [13, 129]),
+            (0x0B, 192, 126, [13, 129]),
+            (0x0C, 192, 72, [13, 184]),
+            (0x0C, 192, 72, [13, 184]),
+            (0x0D, 195, 68, [10, 188]),
+        ]
+        hands = sorted(
+            [it for it in self.an.ui_items if it.item_type == 0x0F],
+            key=lambda it: (it.header_values[1], it.x, it.y),
+        )
+        assert len(hands) == 5
+        for got, (sub, x, y, pivots) in zip(hands, expected, strict=True):
+            assert got.header_values[1] == sub
+            assert got.x == x and got.y == y
+            assert got.data_values[:2] == pivots
 
-    lz4pal = sum(1 for b in an.blocks if b.b_type == main.BlockType.LZ4pal32)
-    assert lz4pal == 66
-    assert len(an.unknown_blocks) == 0
+    def test_layouts(self):
+        layouts = [it for it in self.an.ui_items if it.item_type == 0x00]
+        assert sorted(it.header_values[1] for it in layouts) == [0x8C, 0x8D]
+
+    def test_big_animation_frames(self):
+        anims = [it for it in self.an.ui_items if it.item_type == 0x14]
+        big_anim = max(anims, key=lambda it: len(it.frame_indices))
+        assert len(big_anim.frame_indices) == 14
 
 
-def _assert_clock21592(an: main.H26WatchfaceAnalyzer, path: Path) -> None:
+class TestClock21592:
     """Specific structural assertions for Clock21592_res.bin."""
-    assert an.preview_offset == 0x20
-    assert an.l2 == 0x390CC
-    assert an.l3 == 0x10072
-    assert an.l4 == 0x29A23
 
-    type_counter = Counter(it.item_type for it in an.ui_items)
-    assert len(an.ui_items) == 8
-    assert type_counter[0x00] == 1
-    assert type_counter[0x01] == 3
-    assert type_counter[0x0F] == 2
-    assert type_counter[0x14] == 2
+    @pytest.fixture(autouse=True)
+    def setup(self, main_module):
+        path = FIXTURES_DIR / "Clock21592_res.bin"
+        self.an = load_fixture(main_module, path)
 
-    # Single layout, sub-type 0x8C (regular)
-    layouts = [it for it in an.ui_items if it.item_type == 0x00]
-    assert len(layouts) == 1
-    assert layouts[0].header_values[1] == 0x8C
+    def test_header_fields(self):
+        assert self.an.preview_offset == 0x20
+        assert self.an.l2 == 0x390CC
+        assert self.an.l3 == 0x10072
+        assert self.an.l4 == 0x29A23
 
-    # 2 hands (minute + second, no hour hand)
-    hands = [it for it in an.ui_items if it.item_type == 0x0F]
-    assert len(hands) == 2
-    hand_subs = sorted(h.header_values[1] for h in hands)
-    assert hand_subs == [0x0C, 0x0D]  # minute, second
+    def test_item_counts(self):
+        tc = Counter(it.item_type for it in self.an.ui_items)
+        assert len(self.an.ui_items) == 8
+        assert tc[0x00] == 1
+        assert tc[0x01] == 3
+        assert tc[0x0F] == 2
+        assert tc[0x14] == 2
 
-    lz4pal = sum(1 for b in an.blocks if b.b_type == main.BlockType.LZ4pal32)
-    assert lz4pal == 35
-    assert len(an.unknown_blocks) == 0
+    def test_single_layout(self):
+        layouts = [it for it in self.an.ui_items if it.item_type == 0x00]
+        assert len(layouts) == 1
+        assert layouts[0].header_values[1] == 0x8C
 
-
-def _assert_clock20493(an: main.H26WatchfaceAnalyzer, path: Path) -> None:
-    """Specific structural assertions for Clock20493_res.bin.
-
-    This fixture is the richest in the suite: it exercises Type 37
-    (system-screen buttons) and Type 47 (angled fonts) — the two
-    parser paths the spec-gap patches (5ce4154) added. The negative
-    dX/dY values also validate the signed-BE byte reader.
-    """
-    assert an.preview_offset == 0x20
-    assert an.l2 == 0x5C29E
-    assert an.l3 == 0x12C15
-    assert an.l4 == 0x18AE4
-
-    type_counter = Counter(it.item_type for it in an.ui_items)
-    assert len(an.ui_items) == 19
-    assert type_counter[0x00] == 2  # regular + AOD layouts
-    assert type_counter[0x0F] == 5  # 3 hands × 2 layouts (no second on AOD)
-    assert type_counter[0x14] == 2
-    assert type_counter[0x37] == 3  # NEW: system-screen buttons
-    assert type_counter[0x47] == 7  # NEW: angled fonts
-
-    # Type 37: each button must have a system_screens list with
-    # exactly one entry, and the data_values must be [3, 116, 116]
-    # (the "3 + W=116 + H=116" pattern observed in the spec).
-    buttons = [it for it in an.ui_items if it.item_type == 0x37]
-    assert len(buttons) == 3
-    button_screens = {it.system_screens[0] for it in buttons if it.system_screens}
-    assert button_screens == {"TimerScreen", "StepDetailScreen", "WeatherScreen"}, (
-        f"unexpected button screens: {button_screens}"
-    )
-    for it in buttons:
-        assert it.data_values == [3, 116, 116], it.data_values
-        assert len(it.system_screens) == 1
-
-    # Type 47: angled fonts with negative dX/dY (validates signed BE)
-    angled = [it for it in an.ui_items if it.item_type == 0x47]
-    assert len(angled) == 7
-    # Every angled font must have at least one negative component
-    # in its (dX, dY) — this is the structural signature of the
-    # fixture and the regression test for the signed-BE fix.
-    assert any(it.data_values[0] < 0 for it in angled), "no negative dX found"
-    assert any(it.data_values[1] < 0 for it in angled), "no negative dY found"
-    # Each angled font references multiple glyph frames
-    assert all(len(it.frame_indices) > 0 for it in angled)
-    frame_counts = sorted(len(it.frame_indices) for it in angled)
-    print(f"  angled font frame counts: {frame_counts}")
-
-    lz4pal = sum(1 for b in an.blocks if b.b_type == main.BlockType.LZ4pal32)
-    assert lz4pal == 85
-    assert len(an.unknown_blocks) == 0
+    def test_hands(self):
+        hands = [it for it in self.an.ui_items if it.item_type == 0x0F]
+        assert len(hands) == 2
+        subs = sorted(h.header_values[1] for h in hands)
+        assert subs == [0x0C, 0x0D]
 
 
-# Map fixture name -> per-fixture detailed assertion
-_PER_FIXTURE_ASSERTIONS = {
-    "Clock20517_res.bin": _assert_clock20517,
-    "Clock21592_res.bin": _assert_clock21592,
-    "Clock20493_res.bin": _assert_clock20493,
-}
+class TestClock20493:
+    """Specific structural assertions for Clock20493_res.bin."""
 
+    @pytest.fixture(autouse=True)
+    def setup(self, main_module):
+        path = FIXTURES_DIR / "Clock20493_res.bin"
+        self.an = load_fixture(main_module, path)
 
-# ---- Runner -----------------------------------------------------------
+    def test_header_fields(self):
+        assert self.an.preview_offset == 0x20
+        assert self.an.l2 == 0x5C29E
+        assert self.an.l3 == 0x12C15
+        assert self.an.l4 == 0x18AE4
 
+    def test_item_counts(self):
+        tc = Counter(it.item_type for it in self.an.ui_items)
+        assert len(self.an.ui_items) == 19
+        assert tc[0x00] == 2
+        assert tc[0x0F] == 5
+        assert tc[0x37] == 3
+        assert tc[0x47] == 7
+        assert tc[0x14] == 2
 
-def main_runner() -> int:
-    fixtures = _list_fixtures()
-    if not fixtures:
-        print(f"[FAIL] no fixtures found in {FIXTURES_DIR}")
-        return 1
-    print(f"Discovered {len(fixtures)} fixture(s):")
-    for f in fixtures:
-        print(f"  - {f.name} ({f.stat().st_size:,} bytes)")
+    def test_system_screens(self):
+        buttons = [it for it in self.an.ui_items if it.item_type == 0x37]
+        assert len(buttons) == 3
+        all_screens = [s for b in buttons for s in b.system_screens]
+        assert len(all_screens) > 0
 
-    failures: list[tuple[str, str]] = []
-    for path in fixtures:
-        name = path.name
-        try:
-            an = _load_fixture(path)
-            _assert_generic(an, path)
-            specific = _PER_FIXTURE_ASSERTIONS.get(name)
-            if specific is not None:
-                specific(an, path)
-            else:
-                print(f"[skip] {name}: no per-fixture assertions defined")
-            print(f"[ok] {name}")
-        except AssertionError as e:
-            failures.append((name, str(e)))
-            print(f"[FAIL] {name}: {e}")
-        except Exception as e:
-            failures.append((name, repr(e)))
-            print(f"[ERROR] {name}: {e!r}")
-
-    if failures:
-        print(f"\n{len(failures)} fixture(s) failed")
-        return 1
-    print(f"\nALL {len(fixtures)} REAL-FILE FIXTURE(S) PASSED ✅")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main_runner())
+    def test_angled_fonts(self):
+        fonts = [it for it in self.an.ui_items if it.item_type == 0x47]
+        assert len(fonts) == 7
+        assert len(fonts[0].frame_indices) == 10

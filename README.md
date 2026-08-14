@@ -120,15 +120,10 @@ uv sync --all-extras
 The repo includes a comprehensive test suite under `tests/`:
 
 ```bash
-uv run python tests/test_smoke.py          # synthetic parser smoke test
-uv run python tests/test_real_file.py      # 3 real fixture assertions
-uv run python tests/test_roundtrip.py      # round-trip + idempotency
-uv run python tests/test_encoder.py        # encoder data model + JSON I/O
-uv run python tests/test_image_codec.py    # image quantization + block encoding
-uv run python tests/test_compile.py        # full encoder pipeline integration
+uv run pytest tests/ -v                  # run all 79 tests
+uv run pytest tests/test_smoke.py -v     # synthetic parser smoke test only
+uv run pytest tests/test_compile.py -v   # encoder pipeline only
 ```
-Expected last line for each: `ALL ... PASSED ✅`.
-
 ### Linting
 
 The project uses [ruff](https://docs.astral.sh/ruff/) for linting. The
@@ -354,12 +349,7 @@ uv run python -m h26.cli build project/ -o watchface.bin
 ### Test suite
 
 ```bash
-uv run python tests/test_encoder.py        # data model + JSON I/O (7 tests)
-uv run python tests/test_image_codec.py    # quantize + block encoding (10 tests)
-uv run python tests/test_compile.py        # full pipeline integration (7 tests)
-uv run python tests/test_smoke.py          # synthetic parser smoke test
-uv run python tests/test_real_file.py      # 3 real fixture assertions
-uv run python tests/test_roundtrip.py      # round-trip + idempotency
+uv run pytest tests/ -v                  # all 79 tests
 ```
 
 ---
