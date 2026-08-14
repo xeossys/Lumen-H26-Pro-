@@ -24,9 +24,19 @@ def vb_get_4b_le(b: bytes, pos: int) -> int:
     if pos < 0 or pos + 3 >= len(b): return -1
     return (b[pos] << 24) + (b[pos + 1] << 16) + (b[pos + 2] << 8) + b[pos + 3]
 
-def vb_get_4b_signed_le(b: bytes, pos: int) -> int:
+def vb_get_4b_signed_be(b: bytes, pos: int) -> int:
+    """Read 4 bytes as a SIGNED big-endian 32-bit integer.
+
+    NOTE: this function was previously misnamed ``vb_get_4b_signed_le``
+    but was always reading big-endian (``>i``). Per the H26 spec, all
+    integer values in the UI Table are signed big-endian, so the
+    behaviour was correct — only the name was wrong.
+    """
     if pos < 0 or pos + 3 >= len(b): return -1
     return struct.unpack('>i', b[pos:pos+4])[0]
+
+# Backwards-compat alias: keep the old name so older call sites still work.
+vb_get_4b_signed_le = vb_get_4b_signed_be
 
 def vb_get_3b_be(b: bytes, pos: int) -> int:
     if pos < 0 or pos + 2 >= len(b): return -1
@@ -124,16 +134,43 @@ class UIItem:
         self.data_values: List[int] = []    
         self.frame_indices: List[int] = []  
         self.pointer_offsets: List[int] = []
+        self.system_screens: List[str] = []   # populated for Type 37
+        self.tag: tuple = ()                  # populated for unknown block tags
 
 class H26WatchfaceAnalyzer:
     def __init__(self):
         self.file_path = ""
         self.raw_bytes = b''
         self.blocks: List[BlockInfo] = []
+        self.unknown_blocks: List[BlockInfo] = []   # blocks with tags not yet mapped
         self.ui_items: List[UIItem] = []
         self.l3 = 0
         self.l4 = 0
+        self.wf_name = ""
+        self.preview_offset = 0
+        self.wf_name_offset = 0
         
+    def _read_wf_name(self, b: bytes) -> str:
+        """Decode the watchface name string living at offset 0x17.
+
+        Per the H26 spec the wf name is a NUL-terminated ASCII string
+        stored in the trailing block. We read it defensively: bounded by
+        the next structural offset (the graphical-block area starts at
+        ``self.preview_offset``) so we never cross into image data.
+        """
+        start = self.wf_name_offset
+        if start < 0 or start >= len(b):
+            return ""
+        end = self.preview_offset if self.preview_offset > start else len(b)
+        raw = b[start:end]
+        nul = raw.find(b'\x00')
+        if nul >= 0:
+            raw = raw[:nul]
+        try:
+            return raw.decode('utf-8', errors='replace')
+        except Exception:
+            return ""
+
     def load_file(self, file_path: str) -> bool:
         self.file_path = file_path
         with open(file_path, 'rb') as f:
@@ -143,6 +180,8 @@ class H26WatchfaceAnalyzer:
         if len(b) < 20: return False
         
         # Magic Header Check
+        # Per the H26 spec, a valid H26 watchface always begins with the
+        # 4-byte signature 0x53 0x62 0x40 0x2A (ASCII: "Sb@*").
         if not (b[0] == 0x53 and b[1] == 0x62 and b[2] == 0x40 and b[3] == 0x2A):
             return False
 
@@ -152,7 +191,20 @@ class H26WatchfaceAnalyzer:
         l2 = vb_get_4b_le(b, 0x1C)
         self.l3 = vb_get_4b_le(b, 0x14)
         self.l4 = self.l3 + vb_get_4b_le(b, 0x18)
-        
+
+        # Per the H26 spec, the main header carries:
+        #   0x00..0x03  magic "Sb@*"  (0x53 0x62 0x40 0x2A)
+        #   0x0C..0x0F  preview-block offset
+        #   0x14..0x17  "block with internal addressing" offset (l3)
+        #   0x18..0x1B  "block with internal addressing" length
+        #   0x1C..0x1F  UI Table offset                  (l2)
+        # The watchface name is a string living in the trailing block
+        # at offset 0x17 (terminated by a NUL or by EOF).
+        self.preview_offset = vb_get_4b_le(b, 0x0C)
+        self.wf_name_offset = 0x17
+        self.wf_name = self._read_wf_name(b)
+
+
         tpos = min(len(b) - 1, l2)
         pos = vb_get_4b_le(b, 0x0C)
 
@@ -190,7 +242,28 @@ class H26WatchfaceAnalyzer:
                 bi.b_type = BlockType.GIF
                 l1 = vb_get_3b_be(b, pos + 2) + 0x10
             else:
-                pos += 1
+                # Unknown block tag — record it instead of silently
+                # dropping it. Researchers need to see these to crack
+                # new block types.
+                bi.b_type = BlockType.Unk
+                bi.tag = (b1, b2)
+                # Be conservative: stop the scan if we hit too much
+                # unknown data, otherwise we'd loop forever on garbage.
+                if pos + 2 >= len(b):
+                    break
+                # Heuristic: try the 3-byte BE length at offset +2
+                # (used by JPG/GIF/0x34), then fall back to 1-byte
+                # skip.
+                guess = vb_get_3b_be(b, pos + 2) + 0x10
+                if 0x10 < guess < len(b) - pos:
+                    l1 = guess
+                else:
+                    l1 = 1
+                if pos + l1 > len(b):
+                    break
+                bi.raw = b[pos:pos + l1]
+                self.unknown_blocks.append(bi)
+                pos += l1
                 continue
 
             if pos + l1 > len(b): break
@@ -358,14 +431,21 @@ class H26WatchfaceAnalyzer:
                 elif t_type == 0x14: 
                     h1 = uii.header_values[1]
                     if h1 in [0x34, 0x3B]:
+                        # Standard animation: header (3*4=12) + 4b X + 4b Y
+                        # + 4b counter + records*8  →  28 + n*8
                         count = vb_get_4b_le(b, pos + 24)
                         l1 = 28 + (count * 8)
                         pos2 = pos + 28
                     elif h1 == 0x70:
+                        # Extended animation: adds 2 unknown 4-byte words
+                        # before X/Y → counter is at pos+28 instead of
+                        # pos+24. Each frame record is still 8 bytes
+                        # (offset + length) per the H26 spec.
                         count = vb_get_4b_le(b, pos + 28)
                         l1 = 32 + (count * 8)
                         pos2 = pos + 32
                     else:
+                        # Fallback / unknown animation variant
                         count = vb_get_4b_le(b, pos + 20)
                         l1 = 24 + (count * 8)
                         pos2 = pos + 24
@@ -377,22 +457,84 @@ class H26WatchfaceAnalyzer:
                         pos2 += 8
                         
                 elif t_type == 0x37:
+                    # Per the H26 spec, Type 37 ("button" / system-screen
+                    # reference) has extended bytes:
+                    #   4b  unknown            (always 3 in observed samples)
+                    #   4b  Width
+                    #   4b  Height
+                    #   30b NUL-terminated strings identifying which
+                    #        system screens this button can jump to
+                    #        (WeatherScreen, CompassScreen,
+                    #         StepDetailScreen, HRScreen, ...).
+                    # The original parser only consumed l1 = 0x3E; we
+                    # now actually extract the fields.
+                    pos2 = pos + 20
+                    if pos2 + 12 > tpos:
+                        raise ValueError("Type 37 too short")
+                    uii.data_values.extend([
+                        vb_get_4b_le(b, pos2),       # unknown (always 3)
+                        vb_get_4b_signed_be(b, pos2 + 4),   # width
+                        vb_get_4b_signed_be(b, pos2 + 8),   # height
+                    ])
+                    # The 30-byte string tail may contain one or more
+                    # NUL-terminated tokens. Split on NULs, drop empties.
+                    str_tail = b[pos2 + 12: pos2 + 12 + 30]
+                    for tok in str_tail.split(b'\x00'):
+                        if tok:
+                            try:
+                                uii.system_screens.append(tok.decode('utf-8', errors='replace'))
+                            except Exception:
+                                pass
                     l1 = 0x3E
                     
                 elif t_type in [0x47, 0x48, 0x4B, 0x4C]:
-                    count = vb_get_4b_le(b, pos + 20) - 2
+                    # Per the H26 spec, "angled font" types (47/48/4B/4C)
+                    # carry a position-shift vector (dX, dY) applied to
+                    # each successive character — this is NOT a frame
+                    # rotation. The header counter equals
+                    #     frame_count + 2
+                    # (the extra 2 slots are dX and dY).
+                    counter = vb_get_4b_le(b, pos + 20)
+                    count = counter - 2
                     if count < 0: count = 0
+                    if pos + 32 > tpos:
+                        raise ValueError("Angled font header too short")
+                    # dX, dY are the first two values in the extended area
+                    uii.data_values.extend([
+                        vb_get_4b_signed_be(b, pos + 24),  # dX
+                        vb_get_4b_signed_be(b, pos + 28),  # dY
+                    ])
                     l1 = 32 + (count * 8)
                     pos2 = pos + 32
                     for _ in range(count):
                         img_offset = vb_get_4b_le(b, pos2)
                         uii.frame_indices.append(img_offset)
-                        uii.pointer_offsets.append(pos2) 
+                        uii.pointer_offsets.append(pos2)
                         pos2 += 8
                         
                 elif t_type == 0x5B:
-                    count = vb_get_4b_le(b, pos + 20)
-                    l1 = 24 + (count * 4)
+                    # Per the H26 spec, Type 5B is a "solid rectangle"
+                    # with extended bytes:
+                    #   4b Counter (typically the number of color bytes
+                    #              that follow, observed = 3)
+                    #   4b Width
+                    #   4b Height
+                    #   3b Color (B, G, R)  -- alpha not used
+                    if pos + 32 > tpos:
+                        raise ValueError("Type 5B too short")
+                    counter = vb_get_4b_le(b, pos + 20)
+                    width  = vb_get_4b_signed_be(b, pos + 24)
+                    height = vb_get_4b_signed_be(b, pos + 28)
+                    color_tail = b[pos + 32: pos + 32 + max(0, counter)]
+                    # The spec states 3 bytes B/G/R. Defensively pad if
+                    # the counter is unusual.
+                    bgr = (
+                        color_tail[0] if len(color_tail) > 0 else 0,
+                        color_tail[1] if len(color_tail) > 1 else 0,
+                        color_tail[2] if len(color_tail) > 2 else 0,
+                    )
+                    uii.data_values.extend([counter, width, height, *bgr])
+                    l1 = 32 + max(0, counter)
                 else:
                     l1 = tpos - pos
             except Exception:
