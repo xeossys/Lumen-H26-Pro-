@@ -202,14 +202,10 @@ def cmd_info(args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    """Round-trip test: parse → serialize → compare."""
+    """Round-trip test: scan → reconstruct → compare (headless, no PyQt6)."""
     import tempfile
 
-    try:
-        from main import H26WatchfaceAnalyzer
-    except ImportError:
-        print("error: cannot import main.py (PyQt6 required for verify)", file=sys.stderr)
-        return 1
+    from h26.decoder import scan_blocks
 
     bin_path = Path(args.file)
     if not bin_path.exists():
@@ -217,22 +213,32 @@ def cmd_verify(args: argparse.Namespace) -> int:
         return 1
 
     original = bin_path.read_bytes()
-    analyzer = H26WatchfaceAnalyzer()
-    if not analyzer.load_file(str(bin_path)):
-        print("error: failed to load file", file=sys.stderr)
+    if len(original) < 20 or original[:4] != b"Sb@*":
+        print("error: not a valid H26 file", file=sys.stderr)
         return 1
 
-    reparsed = analyzer.serialize()
-    if original != reparsed:
+    scan = scan_blocks(original)
+    blocks = scan["blocks"]
+    ui_items = scan["ui_items"]
+    l2 = scan["l2"]
+    preview_offset = scan["preview_offset"]
+
+    # Reconstruct: header + graphical blocks (contiguous) + UI table tail
+    header = original[:preview_offset]
+    graph = b"".join(blk.raw for blk in blocks)
+    tail = original[l2:]
+    reconstructed = header + graph + tail
+
+    if reconstructed != original:
         with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as f:
-            f.write(reparsed)
-            print(f"MISMATCH: original={len(original)} bytes, reparsed={len(reparsed)} bytes")
+            f.write(reconstructed)
+            print(f"MISMATCH: original={len(original)} bytes, reparsed={len(reconstructed)} bytes")
             print(f"Reparsed written to: {f.name}")
         return 1
 
     print(f"✓ Round-trip OK: {len(original):,} bytes preserved")
-    print(f"  Blocks: {len(analyzer.blocks)}")
-    print(f"  UI items: {len(analyzer.ui_items)}")
+    print(f"  Blocks: {len(blocks)}")
+    print(f"  UI items: {len(ui_items)}")
     return 0
 
 
