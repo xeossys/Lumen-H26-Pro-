@@ -27,94 +27,29 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+# Import shared utilities from h26 module
+from h26.decoder import (
+    TAG_BGR565,
+    TAG_BGR565A,
+    TAG_GIF,
+    TAG_JPG,
+    TAG_LZ4PAL32,
+    TAG_UNK_34,
+)
+from h26.utils import (
+    decompress_lz4_vb,
+    vb_get_3b_be,
+    vb_get_4b_be,
+    vb_get_4b_le,
+    vb_get_4b_signed_be,
+    vb_get_4b_signed_le,
+)
+
 # ==============================================================================
 # 1. CORE UTILITIES & DECOMPRESSOR
 # ==============================================================================
-
-
-def vb_get_4b_be(b: bytes, pos: int) -> int:
-    if pos < 0 or pos + 3 >= len(b):
-        return -1
-    return b[pos] + (b[pos + 1] << 8) + (b[pos + 2] << 16) + (b[pos + 3] << 24)
-
-
-def vb_get_4b_le(b: bytes, pos: int) -> int:
-    if pos < 0 or pos + 3 >= len(b):
-        return -1
-    return (b[pos] << 24) + (b[pos + 1] << 16) + (b[pos + 2] << 8) + b[pos + 3]
-
-
-def vb_get_4b_signed_be(b: bytes, pos: int) -> int:
-    """Read 4 bytes as a SIGNED big-endian 32-bit integer.
-
-    NOTE: this function was previously misnamed ``vb_get_4b_signed_le``
-    but was always reading big-endian (``>i``). Per the H26 spec, all
-    integer values in the UI Table are signed big-endian, so the
-    behaviour was correct — only the name was wrong.
-    """
-    if pos < 0 or pos + 3 >= len(b):
-        return -1
-    return struct.unpack(">i", b[pos : pos + 4])[0]
-
-
-# Backwards-compat alias: keep the old name so older call sites still work.
-vb_get_4b_signed_le = vb_get_4b_signed_be
-
-
-def vb_get_3b_be(b: bytes, pos: int) -> int:
-    if pos < 0 or pos + 2 >= len(b):
-        return -1
-    return b[pos] + (b[pos + 1] << 8) + (b[pos + 2] << 16)
-
-
-def decompress_lz4_vb(b: bytes) -> bytes:
-    db = bytearray()
-    pos = 0
-    tpos = len(b) - 1
-    try:
-        while pos < tpos:
-            bt = b[pos]
-            cl = bt >> 4
-            cm = (bt & 0x0F) + 4
-            pos += 1
-            if cl == 0x0F:
-                while True:
-                    bt = b[pos]
-                    cl += bt
-                    pos += 1
-                    if bt != 0xFF:
-                        break
-            db.extend(b[pos : pos + cl])
-            pos += cl
-            if pos >= tpos:
-                break
-            opos = b[pos] + (b[pos + 1] << 8)
-            pos += 2
-            if cm == 0x13:
-                while True:
-                    bt = b[pos]
-                    cm += bt
-                    pos += 1
-                    if bt != 0xFF:
-                        break
-            dpos = len(db)
-            dopos = dpos - opos
-            if cm > opos:
-                pattern = db[dopos:dpos]
-                if not pattern:
-                    break
-                while len(pattern) < cm:
-                    pattern.extend(pattern)
-                db.extend(pattern[:cm])
-            else:
-                db.extend(db[dopos : dopos + cm])
-    # Malformed input is expected for proprietary H26 streams; we
-    # silently truncate to whatever was decoded so far rather than
-    # crashing the analyzer. Logging at DEBUG keeps it inspectable
-    # without spamming the user's stderr.
-    except (IndexError, ValueError, struct.error) as exc:
-        logging.debug("LZ4 decode truncated at pos=%d: %s", pos, exc)
-    return bytes(db)
+# Byte readers and LZ4 decompression are now imported from h26.utils
+# See h26/utils.py for the implementations
 
 
 def generate_hex_dump(data: bytes, limit: int = 8192) -> str:
@@ -263,24 +198,27 @@ class H26WatchfaceAnalyzer:
             bi.internal_offset = (pos - self.l3) if (self.l3 <= pos <= self.l4) else -1
 
             l1 = 0
-            if b1 == 0x4B and b2 == 0x01:
+            tag = (b1, b2)
+
+            if tag == TAG_LZ4PAL32:
                 bi.b_type = BlockType.LZ4pal32
                 l1 = vb_get_4b_be(b, pos + 8) + 0x10
-            elif b1 == 0x48 and b2 == 0x01:
+            elif tag == TAG_BGR565A:
                 bi.b_type = BlockType.LZ4raw565a
                 l1 = vb_get_4b_be(b, pos + 8) + 0x10
-            elif b1 == 0x49 and b2 == 0x01:
+            elif tag == TAG_BGR565:
                 bi.b_type = BlockType.LZ4raw565
                 l1 = vb_get_4b_be(b, pos + 8) + 0x10
-            elif b1 == 0x09 and b2 == 0x00:
+            elif tag == TAG_JPG:
                 bi.b_type = BlockType.JPG
                 l1 = vb_get_3b_be(b, pos + 2) + 0x10
-            elif b1 == 0x34 and b2 == 0x01:
-                bi.b_type = BlockType.Unk
-                l1 = vb_get_3b_be(b, pos + 2) + 0x08
-            elif b1 == 0x03 and b2 == 0x00:
+            elif tag == TAG_GIF:
                 bi.b_type = BlockType.GIF
                 l1 = vb_get_3b_be(b, pos + 2) + 0x10
+            elif tag == TAG_UNK_34:
+                # Unknown block type with different header size
+                bi.b_type = BlockType.Unk
+                l1 = vb_get_3b_be(b, pos + 2) + 0x08
             else:
                 # Unknown block tag — record it instead of silently
                 # dropping it. Researchers need to see these to crack
@@ -796,8 +734,22 @@ class OpenLumenH26ProPlus(QMainWindow):
         self.btn_extract.clicked.connect(self._extract_images)
         self.btn_extract.setMinimumWidth(130)
 
+        self.btn_export = QPushButton("Export Project")
+        self.btn_export.setToolTip("Export watchface as folder with images + project.json")
+        self.btn_export.setEnabled(False)
+        self.btn_export.clicked.connect(self._export_project)
+        self.btn_export.setMinimumWidth(130)
+
+        self.btn_replace = QPushButton("Replace Image")
+        self.btn_replace.setToolTip("Replace selected block image with a new file")
+        self.btn_replace.setEnabled(False)
+        self.btn_replace.clicked.connect(self._replace_image)
+        self.btn_replace.setMinimumWidth(130)
+
         header_layout.addWidget(self.btn_open)
         header_layout.addWidget(self.btn_extract)
+        header_layout.addWidget(self.btn_export)
+        header_layout.addWidget(self.btn_replace)
         header_layout.addStretch()
         main_layout.addLayout(header_layout)
 
@@ -903,6 +855,7 @@ class OpenLumenH26ProPlus(QMainWindow):
         if self.analyzer.load_file(file_path):
             self.status_bar.showMessage(f"Successfully loaded: {os.path.basename(file_path)}")
             self.btn_extract.setEnabled(True)
+            self.btn_export.setEnabled(True)
             self._populate_block_tree()
             self._populate_ui_table()
             self._log_info(
@@ -954,6 +907,149 @@ class OpenLumenH26ProPlus(QMainWindow):
             f"📥 Export Complete: Saved {img_count} visual assets and UI Table to {export_dir}"
         )
         self.status_bar.showMessage(f"Extraction successful: {img_count} items exported.")
+
+    def _export_project(self):
+        """Export watchface as folder with images + project.json."""
+        if not self.analyzer.blocks:
+            return
+
+        export_dir = QFileDialog.getExistingDirectory(self, "Select Folder to Export Project")
+        if not export_dir:
+            return
+
+        # Use h26.decoder to scan the binary
+        from h26.decoder import scan_blocks
+
+        b = self.analyzer.raw_bytes
+        scan = scan_blocks(b)
+
+        # Build block offset → index map
+        block_offset_map = {}
+        for i, blk in enumerate(scan["blocks"]):
+            block_offset_map[blk.offset] = i
+
+        # Export images
+        images_dir = os.path.join(export_dir, "images")
+        os.makedirs(images_dir, exist_ok=True)
+
+        img_count = 0
+        for i, bi in enumerate(self.analyzer.blocks):
+            if bi.qimage:
+                fname = f"block_{i:03d}.png"
+                bi.qimage.save(os.path.join(images_dir, fname), "PNG")
+                img_count += 1
+
+        # Build UI items with image references
+        ui_items_export = []
+        for item in scan["ui_items"]:
+            export_item = {
+                "type": f"0x{item.type:02X}",
+                "sub_type": f"0x{item.sub_type:02X}",
+                "x": item.x,
+                "y": item.y,
+            }
+
+            if item.frame_indices:
+                export_item["images"] = []
+                for frame_off in item.frame_indices:
+                    if frame_off in block_offset_map:
+                        blk_idx = block_offset_map[frame_off]
+                        export_item["images"].append(f"block_{blk_idx:03d}.png")
+
+            if item.pivot:
+                export_item["pivot"] = item.pivot
+
+            ui_items_export.append(export_item)
+
+        # Build project structure
+        import json
+
+        project = {
+            "name": os.path.splitext(os.path.basename(self.analyzer.file_path))[0],
+            "source_file": os.path.basename(self.analyzer.file_path),
+            "canvas_width": 480,
+            "canvas_height": 480,
+            "blocks": [blk.to_dict() for blk in scan["blocks"]],
+            "ui_table": ui_items_export,
+        }
+
+        # Write project.json
+        project_path = os.path.join(export_dir, "project.json")
+        with open(project_path, "w", encoding="utf-8") as f:
+            json.dump(project, f, indent=2, ensure_ascii=False)
+
+        self._log_info(
+            f"📥 Project Export Complete: {img_count} images + project.json to {export_dir}"
+        )
+        self.status_bar.showMessage(f"Project exported: {export_dir}")
+
+    def _replace_image(self):
+        """Replace the selected block's image with a new file."""
+        selected = self.tree_blocks.selectedItems()
+        if not selected:
+            return
+
+        bi: BlockInfo = selected[0].data(0, Qt.ItemDataRole.UserRole)
+        if not bi.qimage:
+            return
+
+        # Open file dialog
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Replacement Image",
+            "",
+            "Image Files (*.png *.jpg *.jpeg *.bmp);;All Files (*)",
+        )
+        if not file_path:
+            return
+
+        # Load new image
+        new_img = QImage(file_path)
+        if new_img.isNull():
+            self._log_info(f"❌ Failed to load image: {file_path}")
+            return
+
+        # Convert to ARGB32 if needed
+        if new_img.format() != QImage.Format.Format_ARGB32:
+            new_img = new_img.convertToFormat(QImage.Format.Format_ARGB32)
+
+        # Update the block
+        old_w, old_h = bi.qimage.width(), bi.qimage.height()
+        new_w, new_h = new_img.width(), new_img.height()
+
+        # Resize if dimensions don't match
+        if old_w != new_w or old_h != new_h:
+            self._log_info(
+                f"⚠️ Resizing image from {new_w}x{new_h} to {old_w}x{old_h}"
+            )
+            new_img = new_img.scaled(
+                old_w, old_h,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+
+        bi.qimage = new_img
+
+        # Re-encode to LZ4pal32 format
+        from h26.image_codec import build_lz4pal32_block
+
+        # Convert QImage to RGBA bytes
+        ptr = new_img.bits()
+        ptr.setsize(new_img.sizeInBytes())
+        rgba_bytes = bytes(ptr)
+
+        # Build new block data
+        new_raw = build_lz4pal32_block(rgba_bytes, new_img.width(), new_img.height())
+        bi.raw = new_raw
+
+        # Update the view
+        self.canvas_static.set_preview(bi.qimage)
+        self._populate_block_tree()
+
+        self._log_info(
+            f"✅ Replaced block at 0x{bi.base_offset:08X} with image from {os.path.basename(file_path)}"
+        )
+        self.status_bar.showMessage(f"Image replaced at block 0x{bi.base_offset:08X}")
 
     def _populate_block_tree(self):
         self.tree_blocks.clear()
@@ -1027,6 +1123,9 @@ class OpenLumenH26ProPlus(QMainWindow):
         if not selected:
             return
         bi: BlockInfo = selected[0].data(0, Qt.ItemDataRole.UserRole)
+
+        # Enable replace button only for image blocks
+        self.btn_replace.setEnabled(bi.qimage is not None)
 
         # 1. Canvas View
         if bi.qimage:
