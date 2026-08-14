@@ -332,6 +332,36 @@ class H26WatchfaceAnalyzer:
                 return block.qimage
         return None
 
+    def serialize(self) -> bytes:
+        """Re-emit the parsed .bin file as bytes.
+
+        Concatenates the raw bytes of every block (in original order:
+        header, graphical blocks, UI table) and any unknown blocks that
+        were captured during the scan. This is a **byte-perfect
+        round-trip** for files whose structure the parser fully
+        understands; for files with unknown blocks the bytes are
+        preserved too, so the output is always structurally equivalent
+        to the input even if the parser didn't decode every field.
+
+        Use this to:
+        * regression-test the parser (parse → serialize → compare)
+        * build the foundation for a future compiler/repacker
+        """
+        parts: list[bytes] = []
+        # The first block is always the header (BlockType.Header),
+        # followed by graphical blocks in the order the scan found
+        # them, with the UI table at the end.
+        for block in self.blocks:
+            parts.append(block.raw)
+        # Unknown blocks were captured separately during the scan
+        # because their tag didn't match any known block type. We
+        # append them after the main blocks to preserve them in the
+        # serialized output even though their position may not be
+        # exact (the round-trip is structural, not positional).
+        for block in self.unknown_blocks:
+            parts.append(block.raw)
+        return b"".join(parts)
+
     def _convert_block_to_image(self, b: bytes) -> Optional[QImage]:
         if len(b) < 0x11:
             return None
