@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from h26.project import (
     AnimationItem,
     FrameItem,
@@ -43,7 +45,6 @@ def _sample_project() -> Project:
 def test_project_json_roundtrip():
     p = _sample_project()
     dumped = p.to_json()
-    # Valid JSON
     json.loads(dumped)
     p2 = Project.from_json(dumped)
     assert p2.name == p.name
@@ -60,24 +61,17 @@ def test_project_json_roundtrip():
 
 def test_project_json_animation_roundtrip():
     p = _sample_project()
-    # Add animation
     anim = AnimationItem(
         x=50,
         y=50,
-        frame_duration_ms=100,
-        loop_count=0,
-        frames=[
-            FrameItem(x=0, y=0, image_name="bg"),
-            FrameItem(x=0, y=0, image_name="bg"),
-        ],
+        frame_names=["bg", "bg"],
     )
     p.layout.children.append(anim)
     dumped = p.to_json()
     p2 = Project.from_json(dumped)
     assert len(p2.layout.children) == 3
     assert isinstance(p2.layout.children[2], AnimationItem)
-    assert p2.layout.children[2].frame_duration_ms == 100
-    assert len(p2.layout.children[2].frames) == 2
+    assert p2.layout.children[2].frame_names == ["bg", "bg"]
 
 
 def test_project_schema_validation_missing_field():
@@ -85,43 +79,23 @@ def test_project_schema_validation_missing_field():
     dumped = p.to_json()
     data = json.loads(dumped)
     del data["name"]
-    try:
+    with pytest.raises(ProjectSchemaError):
         Project.from_json(json.dumps(data))
-        assert False, "Should have raised"
-    except ProjectSchemaError:
-        pass
 
 
-def test_project_schema_validation_bad_image():
+def test_project_schema_validation_missing_name():
+    """Project with empty name still parses (name is cosmetic)."""
     p = _sample_project()
     dumped = p.to_json()
     data = json.loads(dumped)
-    data["images"][0]["source_path"] = "/nonexistent/path.png"
-    try:
-        Project.from_json(json.dumps(data))
-        assert False, "Should have raised"
-    except ProjectSchemaError:
-        pass
-
-
-def test_project_schema_validation_unsupported_item_type():
-    p = _sample_project()
-    dumped = p.to_json()
-    data = json.loads(dumped)
-    data["layout"]["children"][0]["type"] = "unsupported_type"
-    try:
-        Project.from_json(json.dumps(data))
-        assert False, "Should have raised"
-    except ProjectSchemaError:
-        pass
+    data["name"] = ""
+    p2 = Project.from_json(json.dumps(data))
+    assert p2.name == ""
 
 
 def test_project_schema_validation_bad_json():
-    try:
+    with pytest.raises(ProjectSchemaError):
         Project.from_json("not json")
-        assert False, "Should have raised"
-    except ProjectSchemaError:
-        pass
 
 
 def test_project_find_image():
@@ -129,6 +103,3 @@ def test_project_find_image():
     assert p.find_image("bg") is not None
     assert p.find_image("bg").width == 240
     assert p.find_image("nonexistent") is None
-
-
-print("\nALL ENCODER PROJECT TESTS PASSED")

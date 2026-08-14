@@ -145,13 +145,9 @@ comment explaining *why*, don't just `# noqa` silently.
 The smoke test (`_smoke_test.py`) is intentionally a single-file
 plain-`assert` script. If you touch the parser:
 
-1. Add a new `UIItem` payload to the synthetic binary.
-2. Add a `print` and `assert` for the parsed fields.
-3. Verify the last line of output is `ALL SMOKE TESTS PASSED ✅`.
-
-If the smoke test ever needs to grow beyond a single file, switch
-to `pytest` (and update the CI workflow, if any, accordingly) — but
-don't introduce `pytest` just for one test.
+1. Add a new `UIItem` payload to the synthetic binary in `conftest.py:build_synthetic_binary()`.
+2. Add a test function in `test_smoke.py` for the parsed fields.
+3. Run `uv run pytest tests/test_smoke.py -v` to verify.
 
 ## Reporting bugs
 
