@@ -228,6 +228,7 @@ class H26WatchfaceAnalyzer:
         self.ui_items.clear()
 
         l2 = vb_get_4b_le(b, 0x1C)
+        self.l2 = l2
         self.l3 = vb_get_4b_le(b, 0x14)
         self.l4 = self.l3 + vb_get_4b_le(b, 0x18)
 
