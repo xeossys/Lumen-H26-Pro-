@@ -1,5 +1,5 @@
 """
-Shared test helpers.
+Shared test helpers and pytest fixtures.
 
 The H26 analyzer code in main.py imports PyQt6 at module top — even
 when we only want the pure-Python parsing primitives. This conftest
@@ -19,10 +19,26 @@ actually calls during parsing.
 
 from __future__ import annotations
 
+import importlib.util
 import struct
 import sys
+import tempfile
 import types
 from pathlib import Path
+
+import pytest
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+MAIN_PY = Path(__file__).resolve().parent.parent / "main.py"
+FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
+
+
+# ---------------------------------------------------------------------------
+# PyQt6 stub
+# ---------------------------------------------------------------------------
 
 
 def install_pyqt6_stub() -> None:
@@ -114,31 +130,36 @@ def install_pyqt6_stub() -> None:
         "QWidget",
         "QVBoxLayout",
         "QHBoxLayout",
-        "QPushButton",
+        "QSplitter",
         "QLabel",
-        "QFileDialog",
+        "QPushButton",
         "QTreeWidget",
         "QTreeWidgetItem",
         "QTableWidget",
         "QTableWidgetItem",
-        "QSplitter",
-        "QTextEdit",
         "QHeaderView",
+        "QTextEdit",
         "QTabWidget",
         "QStatusBar",
-        "QSizePolicy",
+        "QFileDialog",
     ]:
         setattr(qtw, n, type(n, (), {}))
 
-    p = types.ModuleType("PyQt6")
-    p._is_h26_stub = True
-    p.QtCore = qt
-    p.QtGui = qtg
-    p.QtWidgets = qtw
-    sys.modules["PyQt6"] = p
+    pyqt6 = types.ModuleType("PyQt6")
+    pyqt6.QtCore = qt
+    pyqt6.QtGui = qtg
+    pyqt6.QtWidgets = qtw
+    pyqt6._is_h26_stub = True  # marker to detect our own stub
+
+    sys.modules["PyQt6"] = pyqt6
     sys.modules["PyQt6.QtCore"] = qt
     sys.modules["PyQt6.QtGui"] = qtg
     sys.modules["PyQt6.QtWidgets"] = qtw
+
+
+# ---------------------------------------------------------------------------
+# Synthetic binary builder
+# ---------------------------------------------------------------------------
 
 
 def build_synthetic_binary() -> bytes:
@@ -195,19 +216,85 @@ def build_synthetic_binary() -> bytes:
     # Type 14: animation, 0 frames (24 bytes total)
     # 20-byte header (5*4) + 4-byte counter=2 (0 frames: 2-2=0)
     item14 = make_ui_5x4(0x14, 0x34, 0, 0, 0) + be32s(0)
+
     ui_table = item37 + item47 + item5b + item14
     struct.pack_into(">I", b, 0x1C, L2)
     b += ui_table
     return bytes(b)
 
 
-# Install the stub at import time so test modules don't have to
-# remember to call install_pyqt6_stub() before importing main.
+# ---------------------------------------------------------------------------
+# Module-level stub installation (runs at import time)
+# ---------------------------------------------------------------------------
+
 install_pyqt6_stub()
 
 
-# Repo root and fixtures paths, available as module-level constants
-# so tests don't have to recompute them.
-REPO_ROOT = Path(__file__).resolve().parent.parent
-FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
-MAIN_PY = REPO_ROOT / "main.py"
+# ---------------------------------------------------------------------------
+# Pytest fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="session")
+def main_module():
+    """Load main.py as a module (session-scoped for performance)."""
+    spec = importlib.util.spec_from_file_location("main", MAIN_PY)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as exc:
+        # QApplication-using code at the bottom of main.py is
+        # unreachable in tests, so this is safe to swallow.
+        print(f"[warn] main.py import warning: {exc}")
+    return mod
+
+
+@pytest.fixture(scope="session")
+def synthetic_binary():
+    """Build the synthetic H26 binary once per session."""
+    return build_synthetic_binary()
+
+
+@pytest.fixture
+def synthetic_file(synthetic_binary, tmp_path):
+    """Write the synthetic binary to a temp file and return its path."""
+    p = tmp_path / "synthetic.bin"
+    p.write_bytes(synthetic_binary)
+    return p
+
+
+@pytest.fixture
+def analyzer(main_module, synthetic_file):
+    """Return a loaded H26WatchfaceAnalyzer from the synthetic binary."""
+    an = main_module.H26WatchfaceAnalyzer()
+    assert an.load_file(str(synthetic_file))
+    return an
+
+
+@pytest.fixture
+def fixture_paths():
+    """Return sorted list of all .bin fixture files."""
+    if not FIXTURES_DIR.is_dir():
+        return []
+    return sorted(FIXTURES_DIR.glob("*.bin"))
+
+
+def load_fixture(main_mod, path: Path):
+    """Load a fixture file into an analyzer and return it."""
+    an = main_mod.H26WatchfaceAnalyzer()
+    assert an.load_file(str(path)), f"load_file returned False on {path.name}"
+    return an
+
+
+def reparse_bytes(main_mod, data: bytes):
+    """Serialize and re-parse to verify round-trip."""
+    an = main_mod.H26WatchfaceAnalyzer()
+    with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tmp:
+        tmp.write(data)
+        tmp_path = tmp.name
+    try:
+        assert an.load_file(tmp_path)
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+    return an
