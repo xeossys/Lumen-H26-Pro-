@@ -175,7 +175,10 @@ Tests and CLI import `main.py` headlessly by injecting PyQt6 stub modules into `
 
 ```python
 # Quick extraction (requires Pillow)
-import sys, types; from pathlib import Path; from PIL import Image
+import sys, types
+from pathlib import Path
+from PIL import Image
+
 # ... (inject PyQt6 stubs, then import main.py) ...
 b = Path("watchface.bin").read_bytes()
 # Scan blocks, decompress LZ4pal32, save as PNG

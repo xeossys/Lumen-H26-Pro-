@@ -1019,11 +1019,10 @@ class OpenLumenH26ProPlus(QMainWindow):
 
         # Resize if dimensions don't match
         if old_w != new_w or old_h != new_h:
-            self._log_info(
-                f"⚠️ Resizing image from {new_w}x{new_h} to {old_w}x{old_h}"
-            )
+            self._log_info(f"⚠️ Resizing image from {new_w}x{new_h} to {old_w}x{old_h}")
             new_img = new_img.scaled(
-                old_w, old_h,
+                old_w,
+                old_h,
                 Qt.AspectRatioMode.IgnoreAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )

@@ -265,6 +265,7 @@ def decode_block_to_rgba(block: bytes) -> tuple[bytes, int, int] | None:
     else:
         return None
 
+
 # ---------------------------------------------------------------------------
 # Block scanning
 # ---------------------------------------------------------------------------
@@ -384,9 +385,7 @@ def _parse_ui_table(b: bytes, l2: int) -> list[UIItemInfo]:
     return items
 
 
-def _calc_extended_length(
-    ui_raw: bytes, pos: int, remaining: int, t_type: int, t_sub: int
-) -> int:
+def _calc_extended_length(ui_raw: bytes, pos: int, remaining: int, t_type: int, t_sub: int) -> int:
     """Calculate the extended bytes length for a UI item."""
 
     if t_type == 0x00:  # Layout
@@ -432,9 +431,7 @@ def _calc_extended_length(
         return remaining
 
 
-def _parse_extended_data(
-    ui_raw: bytes, ext_start: int, ext_len: int, item: UIItemInfo
-) -> None:
+def _parse_extended_data(ui_raw: bytes, ext_start: int, ext_len: int, item: UIItemInfo) -> None:
     """Parse extended data for specific UI item types."""
 
     if item.type in (0x01, 0x02):  # Frame

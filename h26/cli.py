@@ -274,16 +274,18 @@ def cmd_export(args: argparse.Namespace) -> int:
         if result is not None:
             png_data, w, h = result
             fname = f"block_{i:03d}.jpg" if blk.type_name == "JPG" else f"block_{i:03d}.png"
-            images.append({
-                "name": fname,
-                "block_index": i,
-                "block_offset": blk.offset,
-                "type": blk.type_name,
-                "width": w,
-                "height": h,
-                "file": f"{images_dir}/{fname}",
-                "data": png_data,
-            })
+            images.append(
+                {
+                    "name": fname,
+                    "block_index": i,
+                    "block_offset": blk.offset,
+                    "type": blk.type_name,
+                    "width": w,
+                    "height": h,
+                    "file": f"{images_dir}/{fname}",
+                    "data": png_data,
+                }
+            )
 
     # Build UI items with image references
     ui_items_export: list[dict] = []
