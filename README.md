@@ -27,8 +27,8 @@ The UI Table parser was hardened against the [H26 Watchface File Format Specific
 * **Encoder (v1):** Compiles a `Project` JSON + PNG/JPG assets into a
   valid `.bin` watchface (`h26/encoder.py`). Supports Layout, Frame,
   Hand, Animation items. Byte-perfect round-trip on 3 real fixtures.
-* **CLI:** `python3 -m h26.cli compile|parse|info|verify` — no PyQt6
-  needed for parse/info/verify. See [CLI section](#-cli).
+* **CLI:** `python3 -m h26.cli compile|parse|info|verify|export|build` — no PyQt6
+  needed for parse/info/verify/export/build. See [CLI section](#-cli).
 * **Zero-Dependency LZ4 Decoder:** Pure-Python LZ4 decompression (no C
   extensions). The encoder uses `lz4` (`pip install lz4`).
 * **Live Watchface Emulator:** Real-time PyQt6 canvas with moving hands.
@@ -59,11 +59,11 @@ The UI Table parser was hardened against the [H26 Watchface File Format Specific
 ## 🛠 Requirements
 
 * Python **3.8+**
-* PyQt6 (`pip install -r requirements.txt`) — only for the GUI emulator
-* `lz4` (`pip install lz4`) — for the encoder
-* `Pillow` (`pip install Pillow`) — for loading PNG/JPG in the encoder
-* [`ruff`](https://docs.astral.sh/ruff/) for linting (`pip install ruff`)
-
+* [uv](https://docs.astral.sh/uv/) (recommended) or pip for dependency management
+* PyQt6 — only for the GUI emulator
+* `lz4` — for the encoder
+* `Pillow` — for loading PNG/JPG in the encoder
+* [`ruff`](https://docs.astral.sh/ruff/) for linting
 ---
 
 ## 🚀 Quick Start
@@ -71,6 +71,12 @@ The UI Table parser was hardened against the [H26 Watchface File Format Specific
 ```bash
 git clone https://github.com/paraflu/Lumen-H26-Pro-Encoder.git
 cd Lumen-H26-Pro-Encoder
+
+# With uv (recommended)
+uv sync
+uv run python main.py
+
+# Or with pip
 pip install -r requirements.txt
 python3 main.py
 ```
@@ -102,19 +108,25 @@ for item in an.ui_items:
 
 ## 🧪 Development
 
+### Setup
+
+```bash
+# Install all dependencies (including dev tools)
+uv sync --all-extras
+```
+
 ### Run the tests
 
 The repo includes a comprehensive test suite under `tests/`:
 
 ```bash
-python3 tests/test_smoke.py          # synthetic parser smoke test
-python3 tests/test_real_file.py      # 3 real fixture assertions
-python3 tests/test_roundtrip.py      # round-trip + idempotency
-python3 tests/test_encoder.py        # encoder data model + JSON I/O
-python3 tests/test_image_codec.py    # image quantization + block encoding
-python3 tests/test_compile.py        # full encoder pipeline integration
+uv run python tests/test_smoke.py          # synthetic parser smoke test
+uv run python tests/test_real_file.py      # 3 real fixture assertions
+uv run python tests/test_roundtrip.py      # round-trip + idempotency
+uv run python tests/test_encoder.py        # encoder data model + JSON I/O
+uv run python tests/test_image_codec.py    # image quantization + block encoding
+uv run python tests/test_compile.py        # full encoder pipeline integration
 ```
-
 Expected last line for each: `ALL ... PASSED ✅`.
 
 ### Linting
@@ -123,9 +135,9 @@ The project uses [ruff](https://docs.astral.sh/ruff/) for linting. The
 configuration lives in `pyproject.toml`.
 
 ```bash
-ruff check .          # lint
-ruff format --check . # style (read-only)
-ruff format .         # auto-format
+uv run ruff check .          # lint
+uv run ruff format --check . # style (read-only)
+uv run ruff format .         # auto-format
 ```
 
 The config enables the rules that catch real bugs (`F`, `BLE`, `S`)
@@ -146,6 +158,40 @@ full rationale).
 * Prefer logging (`logging.debug` / `logging.warning`) over `print`
   for diagnostics — the GUI's `QStatusBar` reads from the logging
   system.
+
+
+---
+
+## 🔨 Building Executables
+
+Build standalone executables for distribution:
+
+```bash
+# Install PyInstaller
+uv sync --all-extras
+
+# Build for current platform
+uv run python build.py
+
+# Clean build artifacts
+uv run python build.py --clean
+```
+
+The executable will be created in `dist/LumenH26Pro/`.
+
+### CI/CD Releases
+
+The project uses GitHub Actions to automatically build executables when a tag is pushed:
+
+```bash
+# Create and push a tag
+git tag 2024.1.1
+git push origin 2024.1.1
+```
+
+This will create a GitHub Release with:
+- `LumenH26Pro-linux-x86_64.tar.gz` — Linux executable
+- `LumenH26Pro-windows-x86_64.zip` — Windows executable
 
 ---
 
@@ -206,21 +252,38 @@ full rationale).
 
 ## 🔧 CLI
 
-The `h26.cli` module provides four commands. No PyQt6 needed for
-`parse`, `info`, and `verify`.
+The `h26.cli` module provides six commands. No PyQt6 needed for
+`parse`, `info`, `verify`, `export`, and `build`.
 
 ```bash
 # Compile a project JSON into a .bin watchface
-python3 -m h26.cli compile project.json -o watchface.bin
+uv run python -m h26.cli compile project.json -o watchface.bin
 
 # Parse a .bin and dump its structure as JSON
-python3 -m h26.cli parse watchface.bin
+uv run python -m h26.cli parse watchface.bin
 
 # Quick summary (header fields, block counts)
-python3 -m h26.cli info watchface.bin
+uv run python -m h26.cli info watchface.bin
 
 # Round-trip test: parse → serialize → compare
-python3 -m h26.cli verify watchface.bin
+uv run python -m h26.cli verify watchface.bin
+
+# Export a .bin to a folder with images + project.json
+uv run python -m h26.cli export watchface.bin -o project/
+
+# Export a .bin to a zip archive
+uv run python -m h26.cli export watchface.bin -o project.zip
+
+# Build a .bin from a folder or zip with project.json + images
+uv run python -m h26.cli build project/ -o watchface.bin
+uv run python -m h26.cli build project.zip -o watchface.bin
+```
+
+You can also use the shortcut `cli.py`:
+
+```bash
+uv run python cli.py export watchface.bin -o project/
+uv run python cli.py build project/ -o watchface.bin
 ```
 
 Example `info` output:
@@ -274,17 +337,29 @@ with open("my_watchface.bin", "wb") as f:
     f.write(data)
 ```
 
-Requires `lz4` (`pip install lz4`) and `Pillow` (`pip install Pillow`).
+Requires `lz4` and `Pillow` (installed automatically with `uv sync`).
+
+### Export & Build (CLI)
+
+The CLI also supports exporting a `.bin` to a folder/zip and rebuilding it:
+
+```bash
+# Export: .bin → folder with images + project.json
+uv run python -m h26.cli export watchface.bin -o project/
+
+# Build: folder/zip → .bin
+uv run python -m h26.cli build project/ -o watchface.bin
+```
 
 ### Test suite
 
 ```bash
-python3 tests/test_encoder.py        # data model + JSON I/O (7 tests)
-python3 tests/test_image_codec.py    # quantize + block encoding (10 tests)
-python3 tests/test_compile.py        # full pipeline integration (7 tests)
-python3 tests/test_smoke.py          # synthetic parser smoke test
-python3 tests/test_real_file.py      # 3 real fixture assertions
-python3 tests/test_roundtrip.py      # round-trip + idempotency
+uv run python tests/test_encoder.py        # data model + JSON I/O (7 tests)
+uv run python tests/test_image_codec.py    # quantize + block encoding (10 tests)
+uv run python tests/test_compile.py        # full pipeline integration (7 tests)
+uv run python tests/test_smoke.py          # synthetic parser smoke test
+uv run python tests/test_real_file.py      # 3 real fixture assertions
+uv run python tests/test_roundtrip.py      # round-trip + idempotency
 ```
 
 ---
